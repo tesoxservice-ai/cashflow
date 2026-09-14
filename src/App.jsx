@@ -13,6 +13,8 @@
 //   /finanzas/obras               → Obras                (rol 'finanzas')
 //   /finanzas/movimientos         → Movimientos          (rol 'finanzas')
 //   /finanzas/cashflow            → CashFlow             (rol 'finanzas')
+//   /finanzas/presupuesto         → PresupuestoVsReal    (rol 'finanzas')
+//   /finanzas/exportar            → Exportar             (rol 'finanzas')
 //   *                             → redirige a /login (ruta no encontrada)
 
 import { Routes, Route, Navigate } from 'react-router-dom'
@@ -24,6 +26,8 @@ import DashboardFinanzas      from './pages/finanzas/DashboardFinanzas'
 import Obras                  from './pages/finanzas/Obras'
 import Movimientos            from './pages/finanzas/Movimientos'
 import CashFlow               from './pages/finanzas/CashFlow'
+import PresupuestoVsReal      from './pages/finanzas/PresupuestoVsReal'
+import Exportar               from './pages/finanzas/Exportar'
 import ProtectedRoute         from './components/ProtectedRoute'
 
 export default function App() {
@@ -101,6 +105,26 @@ export default function App() {
         element={
           <ProtectedRoute rolRequerido="finanzas">
             <CashFlow />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ── Módulo Presupuesto vs Real: solo rol 'finanzas' ──── */}
+      <Route
+        path="/finanzas/presupuesto"
+        element={
+          <ProtectedRoute rolRequerido="finanzas">
+            <PresupuestoVsReal />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ── Módulo Exportar: solo rol 'finanzas' ─────────────── */}
+      <Route
+        path="/finanzas/exportar"
+        element={
+          <ProtectedRoute rolRequerido="finanzas">
+            <Exportar />
           </ProtectedRoute>
         }
       />

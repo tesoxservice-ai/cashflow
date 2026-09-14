@@ -106,25 +106,26 @@ export default function DashboardFinanzas() {
             }
           />
 
-          <PlaceholderModulo
-            titulo="Débitos Automáticos"
-            descripcion="Gestioná los servicios con débito recurrente."
-            etiqueta="Próximamente"
+          {/* Módulo activo: Exportar a Excel */}
+          <ModuloActivo
+            titulo="Exportar a Excel"
+            descripcion="Generá el reporte mensual para el Directorio con 5 hojas."
+            onIr={() => navigate('/finanzas/exportar')}
             icono={
-              // Ícono: reloj / recurrencia
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021
+                     18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
               </svg>
             }
           />
 
-          <PlaceholderModulo
+          {/* Módulo activo: Presupuesto vs. Real */}
+          <ModuloActivo
             titulo="Presupuesto vs. Real"
             descripcion="Comparativa entre lo presupuestado y lo ejecutado."
-            etiqueta="Próximamente"
+            onIr={() => navigate('/finanzas/presupuesto')}
             icono={
-              // Ícono: escala / comparativa
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round"
                   d="M12 3v17.25m0 0c-1.472 0-2.882.265-4.185.75M12
