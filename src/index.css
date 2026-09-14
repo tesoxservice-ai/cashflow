@@ -1,0 +1,6 @@
+/* src/index.css */
+/* Directivas de Tailwind CSS — necesarias para que los estilos funcionen */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
