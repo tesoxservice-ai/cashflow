@@ -1,6 +1,6 @@
-// pages/finanzas/PresupuestoVsReal.jsx
-// Módulo de análisis Presupuesto vs. Real para el rol 'finanzas'.
-// Ruta: /finanzas/presupuesto
+// pages/operaciones/PresupuestoVsReal.jsx
+// Módulo de análisis Presupuesto vs. Real para el rol 'operaciones'.
+// Ruta: /operaciones/presupuesto
 //
 // Modos:
 //   - Por período: filtra un mes específico (comportamiento original)
@@ -95,7 +95,7 @@ function PuntoSemaforo({ pct, sinPresupuesto }) {
 // ══════════════════════════════════════════════════════════════
 // COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════════
-export default function PresupuestoVsReal() {
+export default function PresupuestoVsRealOperaciones() {
   const navigate = useNavigate()
 
   const [obras,  setObras]  = useState([])
@@ -325,21 +325,21 @@ export default function PresupuestoVsReal() {
   // ── RENDER ─────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <Navbar titulo="Cash Flow" accentColor="text-blue-400" />
+      <Navbar titulo="Operaciones" accentColor="text-emerald-400" />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
 
         {/* Encabezado */}
         <div className="mb-8">
           <button
-            onClick={() => navigate('/finanzas')}
-            className="text-blue-600 text-sm hover:text-blue-800 transition-colors
+            onClick={() => navigate('/operaciones')}
+            className="text-emerald-600 text-sm hover:text-emerald-800 transition-colors
                        flex items-center gap-1.5 mb-1"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
             </svg>
-            Panel de Finanzas
+            Panel de Operaciones
           </button>
           <h1 className="text-slate-900 text-2xl font-semibold tracking-tight">
             Presupuesto vs. Real
@@ -392,7 +392,7 @@ export default function PresupuestoVsReal() {
 
         {obraId && cargando && (
           <div className="flex items-center justify-center py-24 gap-3 text-slate-500">
-            <span className="w-5 h-5 border-2 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
+            <span className="w-5 h-5 border-2 border-slate-300 border-t-emerald-500 rounded-full animate-spin" />
             <span className="text-sm">Calculando análisis…</span>
           </div>
         )}
@@ -756,4 +756,4 @@ function Th({ children, align = 'left' }) {
 
 const selCls = `w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-200
   text-slate-900 bg-white focus:outline-none focus:ring-2
-  focus:ring-blue-500 focus:border-transparent`
+  focus:ring-emerald-500 focus:border-transparent`
