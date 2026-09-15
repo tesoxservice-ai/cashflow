@@ -192,7 +192,7 @@ const IconLogout = () => (
 // ─── Navbar ───────────────────────────────────────────────────────────────────
 
 function TopNav({ perfil }) {
-  const { signOut } = useAuth()
+  const { logout } = useAuth()
   const [menuAbierto, setMenuAbierto] = useState(false)
 
   const iniciales = perfil
@@ -201,7 +201,7 @@ function TopNav({ perfil }) {
 
   const handleCerrarSesion = async () => {
     setMenuAbierto(false)
-    await signOut()
+    await logout()
   }
 
   return (
