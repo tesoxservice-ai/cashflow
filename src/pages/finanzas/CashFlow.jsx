@@ -43,6 +43,17 @@ function fechaFutura(dias) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+// Primer período de presupuesto que se toma en cuenta para armar Gastos Proyectados.
+const PERIODO_DESDE_GASTOS_PROYECTADOS = '2026-09-01'
+
+// Fecha de compromiso de un Gasto Proyectado: último día calendario
+// del mes siguiente al período presupuestado (ej: período Agosto -> 30/09).
+function fechaGastoProyectado(periodoISO) {
+  const d = new Date(periodoISO + 'T00:00:00')
+  const ultimoDia = new Date(d.getFullYear(), d.getMonth() + 2, 0)
+  return `${ultimoDia.getFullYear()}-${String(ultimoDia.getMonth() + 1).padStart(2, '0')}-${String(ultimoDia.getDate()).padStart(2, '0')}`
+}
+
 const BADGE_CAT = {
   factura:           'bg-orange-50 text-orange-700',
   ingreso_cliente:   'bg-emerald-50 text-emerald-700',
@@ -50,6 +61,7 @@ const BADGE_CAT = {
   impuesto:          'bg-red-50 text-red-700',
   debito_automatico: 'bg-yellow-50 text-yellow-700',
   fima:              'bg-cyan-50 text-cyan-700',
+  gasto_proyectado:  'bg-amber-50 text-amber-700',
   otro:              'bg-slate-100 text-slate-600',
 }
 const LABEL_CAT = {
@@ -59,6 +71,7 @@ const LABEL_CAT = {
   impuesto:          'Impuesto',
   debito_automatico: 'Débito aut.',
   fima:              'FIMA',
+  gasto_proyectado:  'Gasto proyectado',
   otro:              'Otro',
 }
 
@@ -96,7 +109,7 @@ const IconBack = () => (
 // ─── TopNav ───────────────────────────────────────────────────────────────────
 
 function TopNav({ perfil }) {
-  const { signOut } = useAuth()
+  const { logout } = useAuth()
   const [menuAbierto, setMenuAbierto] = useState(false)
 
   const iniciales = perfil
@@ -105,7 +118,7 @@ function TopNav({ perfil }) {
 
   const handleCerrarSesion = async () => {
     setMenuAbierto(false)
-    await signOut()
+    await logout()
   }
 
   return (
@@ -173,6 +186,7 @@ export default function CashFlow() {
   const [cuentas,     setCuentas]     = useState([])
   const [movimientos, setMovimientos] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
+  const [presupuestos, setPresupuestos] = useState([])
   const [cargando,    setCargando]    = useState(true)
   const [error,       setError]       = useState('')
 
@@ -202,13 +216,29 @@ export default function CashFlow() {
 
   useEffect(() => { cargarSaldosBase() }, [cargarSaldosBase])
 
+  const cargarPresupuestos = useCallback(async () => {
+    const { data } = await supabase
+      .from('presupuestos')
+      .select('id, obra_id, rubro_id, concepto, periodo, monto, cerrado, obras ( id, codigo, nombre ), rubros ( id, nombre )')
+      .eq('cerrado', false)
+      .gte('periodo', PERIODO_DESDE_GASTOS_PROYECTADOS)
+    setPresupuestos(data ?? [])
+  }, [])
+
+  useEffect(() => { cargarPresupuestos() }, [cargarPresupuestos])
+
+  async function handleCerrarPresupuesto(presupuestoId) {
+    await supabase.from('presupuestos').update({ cerrado: true }).eq('id', presupuestoId)
+    await cargarPresupuestos()
+  }
+
   const cargarMovimientos = useCallback(async () => {
     setCargando(true); setError('')
     const { data: movData, error: movErr } = await supabase
       .from('movimientos')
       .select(`
         id, tipo, categoria, proveedor_cliente, numero_factura,
-        monto_bruto, monto_neto, concepto,
+        monto_bruto, monto_neto, concepto, presupuesto_id,
         periodo, fecha_pago, estado, cuenta_id, created_at,
         obras   ( id, codigo, nombre ),
         rubros  ( id, nombre ),
@@ -249,16 +279,64 @@ export default function CashFlow() {
 
   useEffect(() => { cargarMovimientos() }, [cargarMovimientos])
 
+  // Cuánto de cada línea de presupuesto ya fue "consumido" por facturas reales vinculadas
+  const aplicadoPorPresupuesto = useMemo(() => {
+    const mapa = {}
+    movimientos.forEach(m => {
+      if (m.presupuesto_id) mapa[m.presupuesto_id] = (mapa[m.presupuesto_id] ?? 0) + m.montoEfectivo
+    })
+    return mapa
+  }, [movimientos])
+
+  // Líneas de "Gasto Proyectado" calculadas solas a partir del Presupuesto
+  // (solo período Agosto 2026 en adelante): pendiente = presupuestado - ya facturado real vinculado.
+  const gastosProyectados = useMemo(() => {
+    return presupuestos
+      .map(p => {
+        const aplicado   = aplicadoPorPresupuesto[p.id] ?? 0
+        const pendiente  = Number(p.monto) - aplicado
+        if (pendiente <= 0) return null
+        return {
+          id:                `gp-${p.id}`,
+          presupuesto_id:    p.id,
+          tipo:              'egreso',
+          categoria:         'gasto_proyectado',
+          estado:            'proyectado',
+          proveedor_cliente: null,
+          numero_factura:    null,
+          concepto:          p.concepto,
+          obras:             p.obras,
+          rubros:            p.rubros,
+          cuenta_id:         null,
+          periodo:           p.periodo,
+          fecha_pago:        fechaGastoProyectado(p.periodo),
+          montoEfectivo:     pendiente,
+          esGastoProyectado: true,
+        }
+      })
+      .filter(Boolean)
+  }, [presupuestos, aplicadoPorPresupuesto])
+
+  // Movimientos reales + gastos proyectados, ordenados por fecha para el cálculo de saldo
+  const filasCashFlow = useMemo(() => {
+    const todas = [...movimientos, ...gastosProyectados]
+    return todas.sort((a, b) => {
+      const fa = a.fecha_pago ?? a.periodo ?? ''
+      const fb = b.fecha_pago ?? b.periodo ?? ''
+      return fa < fb ? -1 : fa > fb ? 1 : 0
+    })
+  }, [movimientos, gastosProyectados])
+
   const { movimientosConSaldo, saldoInicial } = useMemo(() => {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
     let saldoActual = sumaSaldosBase
-    const resultado = movimientos.map(m => {
+    const resultado = filasCashFlow.map(m => {
       if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
       else                      saldoActual -= m.montoEfectivo
       return { ...m, saldoAcumulado: saldoActual }
     })
     return { movimientosConSaldo: resultado, saldoInicial: sumaSaldosBase }
-  }, [movimientos, saldosBase])
+  }, [filasCashFlow, saldosBase])
 
   const cards = useMemo(() => {
     const hoy = hoyISO()
@@ -268,7 +346,7 @@ export default function CashFlow() {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
 
     let saldoHoy = sumaSaldosBase
-    movimientos.forEach(m => {
+    filasCashFlow.forEach(m => {
       const fecha = m.fecha_pago ?? m.periodo
       if (!fecha || fecha > hoy) return
       if (m.tipo === 'ingreso') saldoHoy += m.montoEfectivo
@@ -286,7 +364,7 @@ export default function CashFlow() {
     }
 
     return { saldoHoy, pos30: posicionEn(d30), pos60: posicionEn(d60), pos90: posicionEn(d90) }
-  }, [movimientos, movimientosConSaldo, saldosBase])
+  }, [filasCashFlow, movimientosConSaldo, saldosBase])
 
   const filasFiltradas = useMemo(() => {
     const fechaLimite = fechaFutura(horizonte)
@@ -432,7 +510,7 @@ export default function CashFlow() {
           </div>
         ) : (
           <>
-            <TablaCashFlow filas={filasFiltradas} saldoInicial={saldoInicial} />
+            <TablaCashFlow filas={filasFiltradas} saldoInicial={saldoInicial} onCerrarPresupuesto={handleCerrarPresupuesto} />
 
             {/* Pie de totales */}
             <div className="mt-3 bg-white border border-slate-100 rounded-2xl p-4
@@ -461,7 +539,7 @@ export default function CashFlow() {
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
-function TablaCashFlow({ filas, saldoInicial }) {
+function TablaCashFlow({ filas, saldoInicial, onCerrarPresupuesto }) {
   const filasRender = useMemo(() => {
     const resultado   = []
     let ultimoPeriodo = null
@@ -495,6 +573,7 @@ function TablaCashFlow({ filas, saldoInicial }) {
               <Th align="right">Ingreso</Th>
               <Th align="right">Egreso</Th>
               <Th align="right">Saldo acumulado</Th>
+              <Th>{/* acciones */}</Th>
             </tr>
           </thead>
           <tbody>
@@ -527,7 +606,9 @@ function TablaCashFlow({ filas, saldoInicial }) {
                   </td>
                   <td className="px-4 py-3 text-slate-700 max-w-[180px]">
                     <span className="truncate block" title={m.proveedor_cliente ?? m.concepto ?? ''}>
-                      {m.proveedor_cliente ?? m.concepto ?? '—'}
+                      {m.esGastoProyectado
+                        ? (m.concepto ?? 'Estimado — Presupuesto')
+                        : (m.proveedor_cliente ?? m.concepto ?? '—')}
                     </span>
                     {m.numero_factura && (
                       <span className="text-xs text-slate-400 block">Nº {m.numero_factura}</span>
@@ -554,6 +635,17 @@ function TablaCashFlow({ filas, saldoInicial }) {
                       <span className="block text-red-400 text-[10px] font-semibold leading-tight mt-0.5">
                         ⚠ Saldo negativo
                       </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {m.esGastoProyectado && (
+                      <button
+                        onClick={() => onCerrarPresupuesto(m.presupuesto_id)}
+                        className="text-xs font-semibold text-slate-400 hover:text-red-600 transition-colors"
+                        title="Cerrar esta línea de presupuesto: deja de mostrarse como pendiente"
+                      >
+                        Cerrar
+                      </button>
                     )}
                   </td>
                 </tr>
@@ -584,6 +676,7 @@ function FilaSeparador({ label, saldoInicio }) {
           {fmtARS(saldoInicio)}
         </span>
       </td>
+      <td />
     </tr>
   )
 }

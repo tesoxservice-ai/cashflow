@@ -15,6 +15,7 @@ import CashFlow                     from './pages/finanzas/CashFlow'
 import PresupuestoVsReal            from './pages/finanzas/PresupuestoVsReal'
 import VentasProyectadasFin         from './pages/finanzas/VentasProyectadas'
 import Exportar                     from './pages/finanzas/Exportar'
+import MargenPorObra                from './pages/MargenPorObra'
 import ProtectedRoute               from './components/ProtectedRoute'
 
 export default function App() {
@@ -39,6 +40,9 @@ export default function App() {
       <Route path="/operaciones/ventas" element={
         <ProtectedRoute rolRequerido="operaciones"><VentasProyectadasOp /></ProtectedRoute>
       } />
+      <Route path="/operaciones/margen" element={
+        <ProtectedRoute rolRequerido="operaciones"><MargenPorObra /></ProtectedRoute>
+      } />
 
       {/* ── Finanzas ──────────────────────────────────────────── */}
       <Route path="/finanzas" element={
@@ -61,6 +65,9 @@ export default function App() {
       } />
       <Route path="/finanzas/exportar" element={
         <ProtectedRoute rolRequerido="finanzas"><Exportar /></ProtectedRoute>
+      } />
+      <Route path="/finanzas/margen" element={
+        <ProtectedRoute rolRequerido="finanzas"><MargenPorObra /></ProtectedRoute>
       } />
 
       <Route path="*" element={<Navigate to="/login" replace />} />

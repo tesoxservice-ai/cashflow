@@ -12,6 +12,7 @@ const RUBROS = [
   { value: 'extras',                 label: 'Extras' },
   { value: 'anticipo',               label: 'Anticipo' },
   { value: 'certificados_ejecucion', label: 'Certificados de ejecución' },
+  { value: 'facturacion',            label: 'Facturación' },
 ]
 
 const fmtARS = n => new Intl.NumberFormat('es-AR', {
@@ -136,6 +137,10 @@ export default function VentasProyectadas() {
   const [mesesReplicar,    setMesesReplicar]    = useState(3)
   const [replicando,       setReplicando]       = useState(false)
   const [errorReplicar,    setErrorReplicar]    = useState('')
+  const [filaEditando,     setFilaEditando]     = useState(null)
+  const [valoresEdicion,   setValoresEdicion]   = useState({})
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false)
+  const [errorEdicion,     setErrorEdicion]     = useState('')
 
   useEffect(() => {
     async function cargarObras() {
@@ -157,7 +162,10 @@ export default function VentasProyectadas() {
     setVentas(data ?? []); setCargando(false)
   }, [])
 
-  useEffect(() => { cargarVentas(obraSeleccionada); setErrorForm('') }, [obraSeleccionada, cargarVentas])
+  useEffect(() => {
+    cargarVentas(obraSeleccionada); setErrorForm('')
+    setFilaEditando(null); setValoresEdicion({}); setErrorEdicion('')
+  }, [obraSeleccionada, cargarVentas])
 
   async function handleAgregar(e) {
     e.preventDefault(); setErrorForm('')
@@ -176,6 +184,31 @@ export default function VentasProyectadas() {
     setEliminando(id)
     await supabase.from('ventas_proyectadas').delete().eq('id', id)
     setEliminando(null); await cargarVentas(obraSeleccionada)
+  }
+
+  function handleIniciarEdicion(v) {
+    setFilaEditando(v.id)
+    setValoresEdicion({ rubro: v.rubro, periodo: v.periodo, monto: String(v.monto) })
+    setErrorEdicion('')
+  }
+
+  function handleCancelarEdicion() {
+    setFilaEditando(null); setValoresEdicion({}); setErrorEdicion('')
+  }
+
+  async function handleGuardarEdicion(id) {
+    setErrorEdicion('')
+    if (!valoresEdicion.rubro) { setErrorEdicion('Seleccioná un rubro.'); return }
+    if (!valoresEdicion.monto || isNaN(Number(valoresEdicion.monto)) || Number(valoresEdicion.monto) <= 0) {
+      setErrorEdicion('Ingresá un monto válido mayor a cero.'); return
+    }
+    setGuardandoEdicion(true)
+    const { error } = await supabase.from('ventas_proyectadas').update({
+      rubro: valoresEdicion.rubro, periodo: valoresEdicion.periodo, monto: Number(valoresEdicion.monto),
+    }).eq('id', id)
+    if (error) { setErrorEdicion('Error al guardar los cambios.'); setGuardandoEdicion(false); return }
+    setFilaEditando(null); setValoresEdicion({}); setGuardandoEdicion(false)
+    await cargarVentas(obraSeleccionada)
   }
 
   async function handleReplicar() {
@@ -296,7 +329,20 @@ export default function VentasProyectadas() {
                           </tr>
                         </thead>
                         <tbody>
+                          {errorEdicion && (
+                            <tr>
+                              <td colSpan={5} className="px-5 pt-4 pb-1">
+                                <MensajeError mensaje={errorEdicion} onCerrar={() => setErrorEdicion('')} />
+                              </td>
+                            </tr>
+                          )}
                           {grupos.map(([periodo, filas]) => filas.map((v, i) => (
+                            filaEditando === v.id ? (
+                              <FilaEdicion key={v.id} valores={valoresEdicion} guardando={guardandoEdicion}
+                                onChange={(campo, valor) => setValoresEdicion(val => ({ ...val, [campo]: valor }))}
+                                onGuardar={() => handleGuardarEdicion(v.id)}
+                                onCancelar={handleCancelarEdicion} />
+                            ) : (
                             <tr key={v.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 transition-colors">
                               <td className="px-5 py-3.5 text-xs text-slate-700">
                                 {i === 0 ? <span className="font-semibold text-slate-800">{labelPeriodo(periodo)}</span> : null}
@@ -314,6 +360,17 @@ export default function VentasProyectadas() {
                               </td>
                               <td className="px-5 py-3.5">
                                 <div className="flex items-center justify-end gap-2">
+                                  {!v.registrado && (
+                                    <button onClick={() => handleIniciarEdicion(v)}
+                                      disabled={filaEditando !== null}
+                                      className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg
+                                                 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+                                      style={{ backgroundColor: '#0e7490' }}
+                                      onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
+                                      onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}>
+                                      Editar
+                                    </button>
+                                  )}
                                   {v.rubro === 'abono' && !v.registrado && (
                                     <button onClick={() => { setModalReplicar(v); setMesesReplicar(3); setErrorReplicar('') }}
                                       className="text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors border"
@@ -330,13 +387,16 @@ export default function VentasProyectadas() {
                                           Eliminando…
                                         </span>
                                       : <button onClick={() => handleEliminar(v.id)}
-                                          className="text-xs font-semibold bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg transition-colors">
+                                          disabled={filaEditando !== null}
+                                          className="text-xs font-semibold bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg
+                                                     transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                                           Eliminar
                                         </button>
                                   )}
                                 </div>
                               </td>
                             </tr>
+                            )
                           )))}
                         </tbody>
                         <tfoot>
@@ -398,6 +458,51 @@ export default function VentasProyectadas() {
         </div>
       )}
     </div>
+  )
+}
+
+function FilaEdicion({ valores, guardando, onChange, onGuardar, onCancelar }) {
+  const inputCls = `w-full px-2.5 py-1.5 text-sm rounded-lg border text-slate-900
+    focus:outline-none focus:ring-2 focus:border-transparent bg-white`
+  return (
+    <tr className="border-b border-cyan-200 bg-cyan-50/40">
+      <td className="px-3 py-2.5 min-w-[160px]">
+        <select value={valores.periodo ?? ''} onChange={e => onChange('periodo', e.target.value)}
+          className={inputCls} style={{ borderColor: '#0e7490' }}>
+          {PERIODOS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+        </select>
+      </td>
+      <td className="px-3 py-2.5 min-w-[160px]">
+        <select value={valores.rubro ?? ''} onChange={e => onChange('rubro', e.target.value)}
+          className={inputCls} style={{ borderColor: '#0e7490' }}>
+          {RUBROS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+        </select>
+      </td>
+      <td className="px-3 py-2.5 min-w-[120px]">
+        <input type="number" min="0.01" step="0.01" value={valores.monto ?? ''}
+          onChange={e => onChange('monto', e.target.value)}
+          className={inputCls + ' text-right'} style={{ borderColor: '#0e7490' }} />
+      </td>
+      <td />
+      <td className="px-3 py-2.5">
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onGuardar} disabled={guardando}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-white
+                       px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 shadow-sm"
+            style={{ backgroundColor: '#0e7490' }}
+            onMouseEnter={e => !guardando && (e.currentTarget.style.backgroundColor = '#164e63')}
+            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}>
+            {guardando && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+            {guardando ? 'Guardando…' : 'Guardar'}
+          </button>
+          <button onClick={onCancelar} disabled={guardando}
+            className="text-xs font-semibold bg-slate-200 hover:bg-slate-300
+                       text-slate-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50">
+            Cancelar
+          </button>
+        </div>
+      </td>
+    </tr>
   )
 }
 

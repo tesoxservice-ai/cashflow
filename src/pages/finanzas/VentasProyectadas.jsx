@@ -12,6 +12,7 @@ const RUBROS = [
   { value: 'extras',                 label: 'Extras' },
   { value: 'anticipo',               label: 'Anticipo' },
   { value: 'certificados_ejecucion', label: 'Certificados de ejecución' },
+  { value: 'facturacion',            label: 'Facturación' },
 ]
 
 const fmtARS = n => new Intl.NumberFormat('es-AR', {

@@ -57,6 +57,14 @@ const IconExportar = () => (
   </svg>
 )
 
+const IconMargen = () => (
+  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round"
+      d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0
+         0l-5.94-2.28m5.94 2.28l-2.28 5.941M3 3v18h18" />
+  </svg>
+)
+
 const IconPresupuesto = () => (
   <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round"
@@ -344,6 +352,12 @@ export default function DashboardFinanzas() {
       descripcion: 'Comparativa entre lo presupuestado y lo ejecutado.',
       icono: <IconPresupuesto />,
       ruta: '/finanzas/presupuesto',
+    },
+    {
+      titulo: 'Margen por Obra',
+      descripcion: 'Ingresos proyectados menos egresos presupuestados, por obra y período.',
+      icono: <IconMargen />,
+      ruta: '/finanzas/margen',
     },
   ]
 

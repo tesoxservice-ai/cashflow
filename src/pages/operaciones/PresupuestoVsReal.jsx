@@ -139,7 +139,7 @@ export default function PresupuestoVsRealOperaciones() {
   const [obras,        setObras]        = useState([])
   const [rubros,       setRubros]       = useState([])
   const [obraId,       setObraId]       = useState('')
-  const [periodo,      setPeriodo]      = useState(periodoActual())
+  const [periodo,      setPeriodo]      = useState('todos')
   const [presupuestos, setPresupuestos] = useState([])
   const [movimientos,  setMovimientos]  = useState([])
   const [cargando,     setCargando]     = useState(false)
