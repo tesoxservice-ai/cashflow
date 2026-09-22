@@ -72,8 +72,6 @@ const FORM_VACIO = {
   fima_fondo_id:      '',
   // Débito automático específico
   debito_config_id:   '',
-  // Vínculo opcional con una línea de presupuesto (Gasto Proyectado)
-  presupuesto_id:     '',
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -86,7 +84,6 @@ export default function FormularioMovimiento({
   const [guardando,    setGuardando]    = useState(false)
   const [error,        setError]        = useState('')
   const [advertencia,  setAdvertencia]  = useState(null) // objeto con info de presupuesto
-  const [presupuestosDisponibles, setPresupuestosDisponibles] = useState([]) // lineas de presupuesto con saldo pendiente
 
   // Actualiza un campo del form
   const set = (campo, valor) => setForm(f => ({ ...f, [campo]: valor }))
@@ -119,7 +116,7 @@ export default function FormularioMovimiento({
 
   // ── Cuando cambia la obra: resetea el rubro ───────────────────
   function handleObra(obraId) {
-    setForm(f => ({ ...f, obra_id: obraId, rubro_id: '', presupuesto_id: '' }))
+    setForm(f => ({ ...f, obra_id: obraId, rubro_id: '' }))
     setAdvertencia(null)
   }
 
@@ -191,52 +188,6 @@ export default function FormularioMovimiento({
     return () => { cancelado = true; clearTimeout(timer) }
   }, [form.obra_id, form.rubro_id, form.monto_bruto, form.periodo, form.categoria, obras, rubros])
 
-  // ── Líneas de presupuesto con saldo pendiente (para vincular esta factura) ──
-  // Solo se consideran los Gastos Proyectados desde Agosto 2026 en adelante.
-  useEffect(() => {
-    set('presupuesto_id', '') // la obra/rubro cambió: el vínculo elegido antes ya no aplica
-
-    if (form.categoria !== 'factura' || !form.obra_id || !form.rubro_id) {
-      setPresupuestosDisponibles([])
-      return
-    }
-
-    let cancelado = false
-
-    async function cargarPresupuestosDisponibles() {
-      const { data: pres } = await supabase
-        .from('presupuestos')
-        .select('id, concepto, periodo, monto')
-        .eq('obra_id',  form.obra_id)
-        .eq('rubro_id', form.rubro_id)
-        .eq('cerrado',  false)
-        .gte('periodo', '2026-09-01')
-
-      if (!pres || pres.length === 0) { if (!cancelado) setPresupuestosDisponibles([]); return }
-
-      const ids = pres.map(p => p.id)
-      const { data: movs } = await supabase
-        .from('movimientos')
-        .select('presupuesto_id, monto_bruto, monto_neto, estado')
-        .in('presupuesto_id', ids)
-
-      const aplicado = {}
-      ;(movs ?? []).forEach(m => {
-        const monto = m.estado === 'ejecutado' ? Number(m.monto_neto ?? m.monto_bruto) : Number(m.monto_bruto)
-        aplicado[m.presupuesto_id] = (aplicado[m.presupuesto_id] ?? 0) + monto
-      })
-
-      const disponibles = pres
-        .map(p => ({ ...p, pendiente: Number(p.monto) - (aplicado[p.id] ?? 0) }))
-        .filter(p => p.pendiente > 0)
-
-      if (!cancelado) setPresupuestosDisponibles(disponibles)
-    }
-
-    cargarPresupuestosDisponibles()
-    return () => { cancelado = true }
-  }, [form.categoria, form.obra_id, form.rubro_id])
-
   // ── SUBMIT ─────────────────────────────────────────────────────
   async function handleGuardar(e) {
     e.preventDefault()
@@ -276,7 +227,6 @@ export default function FormularioMovimiento({
       forma_pago:        form.forma_pago                || null,
       numero_op:         form.numero_op.trim()          || null,
       fecha_pago:        form.fecha_pago                || null,
-      presupuesto_id:    form.presupuesto_id             || null,
     }
 
     setGuardando(true)
@@ -417,20 +367,6 @@ export default function FormularioMovimiento({
                 <input type="text" placeholder="Ej: OP-2026-001"
                   value={form.numero_op}
                   onChange={e => set('numero_op', e.target.value)} className={inputCls} />
-              </Campo>
-            )}
-
-            {/* Aplicar contra un Gasto Proyectado (factura, si hay presupuesto pendiente) */}
-            {cat === 'factura' && presupuestosDisponibles.length > 0 && (
-              <Campo label="Aplicar contra presupuesto (opcional)">
-                <select value={form.presupuesto_id} onChange={e => set('presupuesto_id', e.target.value)} className={selectCls}>
-                  <option value="">— No aplicar —</option>
-                  {presupuestosDisponibles.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {PERIODOS.find(pp => pp.value === p.periodo)?.label ?? p.periodo} · {p.concepto} · pendiente {fmtARS(p.pendiente)}
-                    </option>
-                  ))}
-                </select>
               </Campo>
             )}
 
