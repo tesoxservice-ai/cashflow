@@ -180,6 +180,11 @@ export default function CashFlow() {
   const [filtroEstado, setFiltroEstado] = useState('')
   const [horizonte,    setHorizonte]    = useState(90)
 
+  const [filaEditando,   setFilaEditando]   = useState(null)
+  const [valoresEdicion, setValoresEdicion] = useState({})
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false)
+  const [errorEdicion,     setErrorEdicion]     = useState('')
+
   useEffect(() => {
     supabase
       .from('cuentas')
@@ -308,6 +313,49 @@ export default function CashFlow() {
     return { ingresos, egresos, diferencia: ingresos - egresos }
   }, [filasFiltradas])
 
+  function handleIniciarEdicion(m) {
+    setFilaEditando(m.id)
+    setErrorEdicion('')
+    setValoresEdicion({
+      fecha_pago: m.fecha_pago ?? '',
+      monto_bruto: String(m.monto_bruto ?? ''),
+      estado: m.estado,
+    })
+  }
+
+  function handleCancelarEdicion() {
+    setFilaEditando(null)
+    setValoresEdicion({})
+    setErrorEdicion('')
+  }
+
+  async function handleGuardarEdicion(id) {
+    setErrorEdicion('')
+    if (!valoresEdicion.fecha_pago) { setErrorEdicion('Elegí una fecha.'); return }
+    const monto = Number(valoresEdicion.monto_bruto)
+    if (!valoresEdicion.monto_bruto || isNaN(monto) || monto <= 0) {
+      setErrorEdicion('El monto tiene que ser un número mayor a 0.'); return
+    }
+
+    setGuardandoEdicion(true)
+    const { error: updError } = await supabase
+      .from('movimientos')
+      .update({
+        fecha_pago: valoresEdicion.fecha_pago,
+        monto_bruto: monto,
+        estado: valoresEdicion.estado,
+        monto_neto: valoresEdicion.estado === 'ejecutado' ? monto : null,
+      })
+      .eq('id', id)
+    setGuardandoEdicion(false)
+
+    if (updError) { setErrorEdicion('No se pudo guardar el cambio.'); return }
+
+    setFilaEditando(null)
+    setValoresEdicion({})
+    await cargarMovimientos()
+  }
+
   const selCls = `w-full px-3 py-2 text-sm rounded-xl border border-slate-200
     text-slate-900 bg-white focus:outline-none focus:ring-2 focus:border-transparent`
 
@@ -432,7 +480,18 @@ export default function CashFlow() {
           </div>
         ) : (
           <>
-            <TablaCashFlow filas={filasFiltradas} saldoInicial={saldoInicial} />
+            <TablaCashFlow
+              filas={filasFiltradas}
+              saldoInicial={saldoInicial}
+              filaEditando={filaEditando}
+              valoresEdicion={valoresEdicion}
+              guardandoEdicion={guardandoEdicion}
+              errorEdicion={errorEdicion}
+              onIniciarEdicion={handleIniciarEdicion}
+              onCambiarEdicion={cambios => setValoresEdicion(v => ({ ...v, ...cambios }))}
+              onGuardarEdicion={handleGuardarEdicion}
+              onCancelarEdicion={handleCancelarEdicion}
+            />
 
             {/* Pie de totales */}
             <div className="mt-3 bg-white border border-slate-100 rounded-2xl p-4
@@ -461,7 +520,11 @@ export default function CashFlow() {
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
-function TablaCashFlow({ filas, saldoInicial }) {
+function TablaCashFlow({
+  filas, saldoInicial,
+  filaEditando, valoresEdicion, guardandoEdicion, errorEdicion,
+  onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion,
+}) {
   const filasRender = useMemo(() => {
     const resultado   = []
     let ultimoPeriodo = null
@@ -495,6 +558,7 @@ function TablaCashFlow({ filas, saldoInicial }) {
               <Th align="right">Ingreso</Th>
               <Th align="right">Egreso</Th>
               <Th align="right">Saldo acumulado</Th>
+              <Th align="right">Acciones</Th>
             </tr>
           </thead>
           <tbody>
@@ -504,6 +568,22 @@ function TablaCashFlow({ filas, saldoInicial }) {
               }
               const { mov: m } = fila
               const saldoNeg   = m.saldoAcumulado < 0
+
+              if (filaEditando === m.id) {
+                return (
+                  <FilaEdicionMovimiento
+                    key={fila.key}
+                    mov={m}
+                    valores={valoresEdicion}
+                    guardando={guardandoEdicion}
+                    error={errorEdicion}
+                    onChange={onCambiarEdicion}
+                    onGuardar={() => onGuardarEdicion(m.id)}
+                    onCancelar={onCancelarEdicion}
+                  />
+                )
+              }
+
               return (
                 <tr key={fila.key}
                   className={`border-b border-slate-100 last:border-0 transition-colors
@@ -556,6 +636,16 @@ function TablaCashFlow({ filas, saldoInicial }) {
                       </span>
                     )}
                   </td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <button
+                      onClick={() => onIniciarEdicion(m)}
+                      disabled={filaEditando !== null}
+                      className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      style={{ color: '#0e7490' }}
+                    >
+                      Editar
+                    </button>
+                  </td>
                 </tr>
               )
             })}
@@ -583,6 +673,77 @@ function FilaSeparador({ label, saldoInicio }) {
         <span className={`text-xs font-bold ${saldoInicio < 0 ? 'text-red-600' : 'text-slate-700'}`}>
           {fmtARS(saldoInicio)}
         </span>
+      </td>
+      <td />
+    </tr>
+  )
+}
+
+function FilaEdicionMovimiento({ mov, valores, guardando, error, onChange, onGuardar, onCancelar }) {
+  return (
+    <tr style={{ backgroundColor: '#ecfeff' }} className="border-b border-cyan-100">
+      <td className="px-4 py-3" colSpan={9}>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Proveedor / Cliente</label>
+            <p className="text-sm text-slate-700 px-3 py-2">{mov.proveedor_cliente ?? mov.concepto ?? '—'}</p>
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Fecha de pago</label>
+            <input
+              type="date"
+              value={valores.fecha_pago ?? ''}
+              onChange={e => onChange({ fecha_pago: e.target.value })}
+              className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
+                        focus:outline-none focus:ring-2 focus:border-transparent"
+              style={{ '--tw-ring-color': '#0e7490' }}
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Monto</label>
+            <input
+              type="number"
+              step="0.01"
+              value={valores.monto_bruto ?? ''}
+              onChange={e => onChange({ monto_bruto: e.target.value })}
+              className="w-36 px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
+                        focus:outline-none focus:ring-2 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Estado</label>
+            <select
+              value={valores.estado ?? 'proyectado'}
+              onChange={e => onChange({ estado: e.target.value })}
+              className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
+                        focus:outline-none focus:ring-2 focus:border-transparent"
+            >
+              <option value="proyectado">Proyectado</option>
+              <option value="ejecutado">Ejecutado</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 ml-auto">
+            {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
+            <button
+              onClick={onCancelar}
+              disabled={guardando}
+              className="px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-700
+                        transition-colors disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={onGuardar}
+              disabled={guardando}
+              className="px-4 py-2 text-sm font-semibold text-white rounded-xl transition-colors
+                        disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ backgroundColor: '#0e7490' }}
+            >
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </button>
+          </div>
+        </div>
       </td>
     </tr>
   )
