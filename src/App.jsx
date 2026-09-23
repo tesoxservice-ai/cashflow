@@ -16,6 +16,7 @@ import PresupuestoVsReal            from './pages/finanzas/PresupuestoVsReal'
 import VentasProyectadasFin         from './pages/finanzas/VentasProyectadas'
 import Exportar                     from './pages/finanzas/Exportar'
 import MargenPorObra                from './pages/MargenPorObra'
+import DashboardDirectorio          from './pages/directorio/Dashboard'
 import ProtectedRoute               from './components/ProtectedRoute'
 
 export default function App() {
@@ -70,6 +71,10 @@ export default function App() {
         <ProtectedRoute rolRequerido="finanzas"><MargenPorObra /></ProtectedRoute>
       } />
 
+      {/* ── Directorio (solo lectura) ─────────────────────────── */}
+      <Route path="/directorio" element={
+        <ProtectedRoute rolRequerido="directorio"><DashboardDirectorio /></ProtectedRoute>
+      } />
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )

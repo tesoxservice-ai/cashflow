@@ -20,6 +20,7 @@ import { useAuth } from '../context/AuthContext'
 const RUTA_POR_ROL = {
   operaciones: '/operaciones',
   finanzas:    '/finanzas',
+  directorio:  '/directorio',
 }
 
 export default function ProtectedRoute({ children, rolRequerido }) {
