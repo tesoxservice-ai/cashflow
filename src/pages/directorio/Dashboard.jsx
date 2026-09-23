@@ -88,6 +88,446 @@ const CATEGORIAS_FILTRO = [
   { value: 'otro',              label: 'Otro' },
 ]
 
+function periodoDeStr(fechaStr) {
+  if (!fechaStr) return null
+  const d = new Date(fechaStr + 'T00:00:00')
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+function ahora() {
+  return new Date().toLocaleDateString('es-AR', {
+    day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+// ══════════════════════════════════════════════════════════════
+// EXPORTAR A EXCEL — reporte prolijo con las mismas cifras que
+// muestra el panel: Cash Flow desde hoy en adelante y Presupuesto
+// vs. Real de todas las obras del mes en curso.
+// XLSX se arma a mano (ZIP + XML) para no depender de librerías.
+// ══════════════════════════════════════════════════════════════
+
+async function cargarDatosExportDirectorio() {
+  const hoy = hoyISO()
+  const periodo = periodoActual()
+
+  const [
+    { data: movTodos,   error: e1 },
+    { data: saldosData, error: e2 },
+    { data: notasData,  error: e3 },
+    { data: obrasData,  error: e4 },
+    { data: rubrosData, error: e5 },
+    { data: presData,   error: e6 },
+    { data: movPeriodo, error: e7 },
+  ] = await Promise.all([
+    supabase.from('movimientos')
+      .select('id,tipo,categoria,proveedor_cliente,numero_factura,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,concepto')
+      .order('fecha_pago', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true }),
+    supabase.from('saldos_iniciales').select('id,cuenta_id,monto,fecha,created_at')
+      .order('fecha', { ascending: false }).order('created_at', { ascending: false }),
+    supabase.from('notas').select('movimiento_id,tipo_nota,monto'),
+    supabase.from('obras').select('id,codigo,nombre').eq('activa', true).order('codigo'),
+    supabase.from('rubros').select('id,nombre'),
+    supabase.from('presupuestos').select('id,obra_id,rubro_id,concepto,periodo,monto').eq('periodo', periodo),
+    supabase.from('movimientos')
+      .select('id,tipo,categoria,monto_bruto,obra_id,rubro_id,concepto,proveedor_cliente')
+      .eq('periodo', periodo).eq('categoria', 'factura').eq('tipo', 'egreso'),
+  ])
+
+  const errs = [e1, e2, e3, e4, e5, e6, e7].filter(Boolean)
+  if (errs.length) throw new Error('No se pudieron cargar los datos para el Excel.')
+
+  const obraMap  = {}; (obrasData  ?? []).forEach(o => obraMap[o.id]  = o)
+  const rubroMap = {}; (rubrosData ?? []).forEach(r => rubroMap[r.id] = r)
+
+  const notasPorMov = {}
+  ;(notasData ?? []).forEach(n => {
+    if (!notasPorMov[n.movimiento_id]) notasPorMov[n.movimiento_id] = []
+    notasPorMov[n.movimiento_id].push(n)
+  })
+
+  const movEnriq = (movTodos ?? []).map(m => {
+    const base  = m.estado === 'ejecutado' ? Number(m.monto_neto ?? m.monto_bruto ?? 0) : Number(m.monto_bruto ?? 0)
+    const notas = notasPorMov[m.id] ?? []
+    const deb   = notas.filter(n => n.tipo_nota === 'debito').reduce((s, n) => s + Number(n.monto), 0)
+    const cred  = notas.filter(n => n.tipo_nota === 'credito').reduce((s, n) => s + Number(n.monto), 0)
+    return {
+      ...m,
+      montoEfectivo: m.categoria === 'factura' ? base + deb - cred : base,
+      obraCodigo: obraMap[m.obra_id]?.codigo ?? '',
+    }
+  })
+
+  const sumaSaldosBase = (saldosData ?? []).reduce((mapa, s) => {
+    if (!mapa._vistos.has(s.cuenta_id)) { mapa._vistos.add(s.cuenta_id); mapa.total += Number(s.monto ?? 0) }
+    return mapa
+  }, { total: 0, _vistos: new Set() }).total
+
+  let saldo = sumaSaldosBase
+  const movConSaldo = movEnriq.map(m => {
+    saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
+    return { ...m, saldoAcumulado: saldo }
+  })
+
+  let saldoHoy = sumaSaldosBase
+  movEnriq.forEach(m => {
+    const fecha = m.fecha_pago ?? m.periodo
+    if (!fecha || fecha > hoy) return
+    saldoHoy += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
+  })
+
+  // Cash flow futuro (lo mismo que ve Directorio: desde hoy en adelante)
+  const movFuturos = movConSaldo.filter(m => {
+    const fecha = m.fecha_pago ?? m.periodo
+    return fecha && fecha >= hoy
+  })
+
+  function posicionEn(fechaLimite) {
+    let ultimo = sumaSaldosBase
+    for (const m of movConSaldo) {
+      const fecha = m.fecha_pago ?? m.periodo
+      if (!fecha || fecha > fechaLimite) break
+      ultimo = m.saldoAcumulado
+    }
+    return ultimo
+  }
+  const pos30 = posicionEn(fechaFutura(30))
+  const pos60 = posicionEn(fechaFutura(60))
+  const pos90 = posicionEn(fechaFutura(90))
+
+  let puntoMax = null, puntoMin = null
+  movFuturos.forEach(m => {
+    if (!puntoMax || m.saldoAcumulado > puntoMax.saldoAcumulado) puntoMax = m
+    if (!puntoMin || m.saldoAcumulado < puntoMin.saldoAcumulado) puntoMin = m
+  })
+
+  // Presupuesto vs Real — todas las obras, mes en curso
+  const presMap = {}, gastoMap = {}
+  ;(presData ?? []).forEach(p => {
+    const k = `${p.obra_id}|${p.rubro_id}|${p.concepto ?? ''}`
+    presMap[k] = (presMap[k] ?? 0) + Number(p.monto)
+  })
+  ;(movPeriodo ?? []).forEach(m => {
+    const k = `${m.obra_id}|${m.rubro_id}|${m.concepto ?? ''}`
+    gastoMap[k] = (gastoMap[k] ?? 0) + Number(m.monto_bruto)
+  })
+  const todasClaves = new Set([...Object.keys(presMap), ...Object.keys(gastoMap)])
+  const analisisPV = []
+  todasClaves.forEach(k => {
+    const [obraId, rubroId, concepto] = k.split('|')
+    const presupuestado = presMap[k]  ?? 0
+    const gastado       = gastoMap[k] ?? 0
+    const diferencia    = presupuestado - gastado
+    const pct           = presupuestado > 0 ? (gastado / presupuestado) * 100 : 0
+    const semaforo      = presupuestado === 0 ? 'Sin presupuesto' : pct > 100 ? 'Superado' : pct >= 80 ? 'Atención' : 'OK'
+    analisisPV.push({
+      obraCodigo: obraMap[obraId]?.codigo ?? '', obraNombre: obraMap[obraId]?.nombre ?? '',
+      rubroNombre: rubroMap[rubroId]?.nombre ?? 'Sin rubro', concepto: concepto ?? '',
+      presupuestado, gastado, diferencia, pct, semaforo,
+    })
+  })
+  analisisPV.sort((a, b) => a.obraCodigo.localeCompare(b.obraCodigo) || a.rubroNombre.localeCompare(b.rubroNombre))
+
+  return { hoy, periodo, saldoHoy, pos30, pos60, pos90, puntoMax, puntoMin, movFuturos, analisisPV }
+}
+
+// XLSX helpers de bajo nivel (sin librerías externas)
+const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+function colLetter(n) {
+  let s = ''
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26) }
+  return s
+}
+function xlCell(col, row, value, styleId = 0, isNum = false) {
+  const ref = `${col}${row}`
+  if (value === null || value === undefined || value === '') return `<c r="${ref}" s="${styleId}"><v>0</v></c>`
+  if (isNum) return `<c r="${ref}" t="n" s="${styleId}"><v>${value}</v></c>`
+  return `<c r="${ref}" t="inlineStr" s="${styleId}"><is><t>${esc(value)}</t></is></c>`
+}
+function xlRow(rowNum, cells) {
+  const celdas = cells.map((c, i) => xlCell(colLetter(i + 1), rowNum, c.v, c.s ?? 0, c.n ?? false))
+  return `<row r="${rowNum}">${celdas.join('')}</row>`
+}
+
+const XL = {
+  azulOscuro: 'FF1E40AF', azulClaro: 'FFBFDBFE', azulMuyClaro: 'FFDBEAFE',
+  verde: 'FF059669', verdePastel: 'FFD1FAE5', verdeClaro: 'FFF0FFF4',
+  rojo: 'FFDC2626', rojoPastel: 'FFFEE4E6', rojoClaro: 'FFFFE4E4',
+  naranjaPast: 'FFFEF3C7', grisOscuro: 'FFE2E8F0', grisClaro: 'FFF1F5F9',
+  grisMuyClaro: 'FFF8FAFC', blanco: 'FFFFFFFF', texto: 'FF0F172A', grisTexto: 'FF64748B',
+}
+
+const stylesXmlDirectorio = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="6">
+    <font><sz val="10"/><color rgb="${XL.texto}"/><name val="Calibri"/></font>
+    <font><sz val="10"/><b/><color rgb="${XL.blanco}"/><name val="Calibri"/></font>
+    <font><sz val="10"/><b/><color rgb="${XL.azulOscuro}"/><name val="Calibri"/></font>
+    <font><sz val="10"/><color rgb="${XL.verde}"/><name val="Calibri"/></font>
+    <font><sz val="10"/><color rgb="${XL.rojo}"/><name val="Calibri"/></font>
+    <font><sz val="12"/><b/><color rgb="${XL.texto}"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="14">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.azulOscuro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.azulClaro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.verdePastel}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.rojoPastel}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.grisOscuro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.azulMuyClaro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.grisMuyClaro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.naranjaPast}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.verdeClaro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.rojoClaro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="${XL.grisClaro}"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF9C4"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right><top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="20">
+    <xf numFmtId="0" fontId="0" fillId="0"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="2"  borderId="0" xfId="0" applyFont="1" applyFill="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="4" fontId="0" fillId="0"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="4" fontId="3" fillId="0"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="4" fontId="4" fillId="0"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="2"  borderId="0" xfId="0" applyFont="1" applyFill="1"><alignment horizontal="center"/></xf>
+    <xf numFmtId="4" fontId="3" fillId="10" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="4" fontId="4" fillId="11" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="4" fontId="0" fillId="6"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="4" fontId="2" fillId="7"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="7"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment horizontal="center"/></xf>
+    <xf numFmtId="0" fontId="5" fillId="0"  borderId="0" xfId="0" applyFont="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="4" fontId="5" fillId="0"  borderId="0" xfId="0" applyFont="1" applyNumberFormat="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="4" fontId="5" fillId="4"  borderId="0" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="4" fontId="4" fillId="5"  borderId="0" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="4"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="5"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="9"  borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="12" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment wrapText="1"/></xf>
+    <xf numFmtId="9" fontId="0" fillId="0"  borderId="1" xfId="0" applyFont="1" applyBorder="1" applyNumberFormat="1"><alignment horizontal="right"/></xf>
+  </cellXfs>
+</styleSheet>`
+
+const S = {
+  normal: 0, cab: 1, num: 2, numVerde: 3, numRojo: 4, sep: 5, numVerdeRow: 6, numRojoRow: 7,
+  subtotal: 8, total: 9, totalTxt: 10, kpiLabel: 11, kpiNum: 12, kpiVerde: 13, kpiRojo: 14,
+  rowVerde: 15, rowRojo: 16, rowNaranja: 17, rowGris: 18, pct: 19,
+}
+
+function generarExcelDirectorio(datos) {
+  // ── Hoja 1: Cash Flow ──────────────────────────────────────
+  const h1 = []
+  let r = 1
+  h1.push(`<row r="${r}"><c r="A${r}" t="inlineStr" s="${S.cab}"><is><t>CASH FLOW — DESDE ${esc(fmtFecha(datos.hoy).toUpperCase())} EN ADELANTE</t></is></c></row>`); r++
+  h1.push(`<row r="${r}"><c r="A${r}" t="inlineStr" s="${S.normal}"><is><t>Generado: ${esc(ahora())}</t></is></c></row>`); r++
+  r++
+
+  h1.push(xlRow(r, [
+    { v: 'Saldo disponible hoy', s: S.kpiLabel }, { v: '', s: S.kpiLabel },
+    { v: 'Posición a 90 días',   s: S.kpiLabel }, { v: '', s: S.kpiLabel },
+    { v: 'Punto más alto',       s: S.kpiLabel }, { v: '', s: S.kpiLabel },
+    { v: 'Punto más bajo',       s: S.kpiLabel },
+  ])); r++
+  h1.push(xlRow(r, [
+    { v: datos.saldoHoy, s: S.kpiNum, n: true }, { v: '', s: 0 },
+    { v: datos.pos90, s: datos.pos90 >= 0 ? S.kpiVerde : S.kpiRojo, n: true }, { v: '', s: 0 },
+    { v: datos.puntoMax?.saldoAcumulado ?? 0, s: S.kpiVerde, n: true }, { v: '', s: 0 },
+    { v: datos.puntoMin?.saldoAcumulado ?? 0, s: (datos.puntoMin?.saldoAcumulado ?? 0) >= 0 ? S.kpiVerde : S.kpiRojo, n: true },
+  ])); r++
+  r++
+
+  h1.push(xlRow(r, [
+    { v: 'Fecha pago', s: S.cab }, { v: 'Estado', s: S.cab }, { v: 'Categoría', s: S.cab },
+    { v: 'Proveedor / Cliente', s: S.cab }, { v: 'Obra', s: S.cab },
+    { v: 'Ingreso', s: S.cab }, { v: 'Egreso', s: S.cab }, { v: 'Saldo acumulado', s: S.cab },
+  ])); r++
+
+  let ultimoMes = null, totIng = 0, totEgr = 0
+  datos.movFuturos.forEach(m => {
+    const mesMov = m.fecha_pago ? periodoDeStr(m.fecha_pago) : m.periodo
+    if (mesMov !== ultimoMes) {
+      h1.push(`<row r="${r}">` +
+        `<c r="A${r}" t="inlineStr" s="${S.sep}"><is><t>${esc(mesMov ? labelPeriodo(mesMov) : 'Sin fecha')}</t></is></c>` +
+        `<c r="B${r}" s="${S.sep}"/><c r="C${r}" s="${S.sep}"/><c r="D${r}" s="${S.sep}"/>` +
+        `<c r="E${r}" s="${S.sep}"/><c r="F${r}" s="${S.sep}"/><c r="G${r}" s="${S.sep}"/><c r="H${r}" s="${S.sep}"/></row>`); r++
+      ultimoMes = mesMov
+    }
+    const neg = m.saldoAcumulado < 0
+    const exec = m.estado === 'ejecutado'
+    const sTxt = neg ? S.rowRojo : exec ? S.rowVerde : S.normal
+    if (m.tipo === 'ingreso') totIng += m.montoEfectivo
+    else                      totEgr += m.montoEfectivo
+    h1.push(xlRow(r, [
+      { v: fmtFecha(m.fecha_pago), s: sTxt },
+      { v: exec ? 'Ejecutado' : 'Proyectado', s: sTxt },
+      { v: LABEL_CAT[m.categoria] ?? m.categoria ?? '', s: sTxt },
+      { v: m.proveedor_cliente ?? m.concepto ?? '', s: sTxt },
+      { v: m.obraCodigo, s: sTxt },
+      { v: m.tipo === 'ingreso' ? m.montoEfectivo : null, s: m.tipo === 'ingreso' ? (exec ? S.numVerdeRow : S.numVerde) : S.normal, n: m.tipo === 'ingreso' },
+      { v: m.tipo === 'egreso'  ? m.montoEfectivo : null, s: m.tipo === 'egreso'  ? (exec ? S.numRojoRow  : S.numRojo)  : S.normal, n: m.tipo === 'egreso' },
+      { v: m.saldoAcumulado, s: neg ? S.numRojoRow : S.num, n: true },
+    ])); r++
+  })
+  h1.push(xlRow(r, [
+    { v: 'TOTALES', s: S.totalTxt }, { v: '', s: S.total }, { v: '', s: S.total }, { v: '', s: S.total }, { v: '', s: S.total },
+    { v: totIng, s: S.total, n: true }, { v: totEgr, s: S.total, n: true },
+    { v: totIng - totEgr, s: totIng - totEgr >= 0 ? S.numVerdeRow : S.numRojoRow, n: true },
+  ])); r++
+
+  const sheet1 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetFormatPr defaultRowHeight="16"/>
+  <cols>
+    <col min="1" max="1" width="14" customWidth="1"/><col min="2" max="2" width="14" customWidth="1"/>
+    <col min="3" max="3" width="18" customWidth="1"/><col min="4" max="4" width="35" customWidth="1"/>
+    <col min="5" max="5" width="10" customWidth="1"/><col min="6" max="6" width="20" customWidth="1"/>
+    <col min="7" max="7" width="20" customWidth="1"/><col min="8" max="8" width="22" customWidth="1"/>
+  </cols>
+  <sheetData>${h1.join('')}</sheetData>
+  <autoFilter ref="A6:H6"/>
+</worksheet>`
+
+  // ── Hoja 2: Presupuesto vs Real (todas las obras, mes en curso) ──
+  const h2 = []
+  r = 1
+  h2.push(`<row r="${r}"><c r="A${r}" t="inlineStr" s="${S.cab}"><is><t>PRESUPUESTO VS. REAL — ${esc(labelPeriodo(datos.periodo).toUpperCase())} — TODAS LAS OBRAS</t></is></c></row>`); r++
+  r++
+  h2.push(xlRow(r, [
+    { v: 'Cód.', s: S.cab }, { v: 'Obra', s: S.cab }, { v: 'Rubro', s: S.cab }, { v: 'Concepto', s: S.cab },
+    { v: 'Presupuestado', s: S.cab }, { v: 'Gastado', s: S.cab }, { v: 'Diferencia', s: S.cab },
+    { v: '% Ejecutado', s: S.cab }, { v: 'Semáforo', s: S.cab },
+  ])); r++
+
+  const colorSemXL = { 'OK': S.rowVerde, 'Atención': S.rowNaranja, 'Superado': S.rowRojo, 'Sin presupuesto': S.rowGris }
+  const numSemXL   = { 'OK': S.numVerde, 'Atención': S.num, 'Superado': S.numRojo, 'Sin presupuesto': S.num }
+  const gruposXL = {}
+  datos.analisisPV.forEach(row => { (gruposXL[row.obraCodigo] ??= []).push(row) })
+
+  let totPresXL = 0, totGastXL = 0
+  Object.entries(gruposXL).forEach(([obraCodigo, filas]) => {
+    filas.forEach(row => {
+      const sTxt = colorSemXL[row.semaforo] ?? S.normal
+      const sNum = numSemXL[row.semaforo]   ?? S.num
+      totPresXL += row.presupuestado; totGastXL += row.gastado
+      h2.push(xlRow(r, [
+        { v: row.obraCodigo, s: sTxt }, { v: row.obraNombre, s: sTxt },
+        { v: row.rubroNombre, s: sTxt }, { v: row.concepto, s: sTxt },
+        { v: row.presupuestado, s: sNum, n: true }, { v: row.gastado, s: sNum, n: true },
+        { v: row.diferencia, s: row.diferencia >= 0 ? S.numVerde : S.numRojo, n: true },
+        { v: row.presupuestado > 0 ? row.pct / 100 : 0, s: S.pct, n: true },
+        { v: row.semaforo, s: sTxt },
+      ])); r++
+    })
+    const stP = filas.reduce((s, x) => s + x.presupuestado, 0)
+    const stG = filas.reduce((s, x) => s + x.gastado, 0)
+    h2.push(xlRow(r, [
+      { v: `Subtotal ${obraCodigo}`, s: S.totalTxt }, { v: '', s: S.subtotal }, { v: '', s: S.subtotal }, { v: '', s: S.subtotal },
+      { v: stP, s: S.subtotal, n: true }, { v: stG, s: S.subtotal, n: true },
+      { v: stP - stG, s: stP - stG >= 0 ? S.numVerde : S.numRojo, n: true },
+      { v: stP > 0 ? stG / stP : 0, s: S.pct, n: true }, { v: '', s: S.subtotal },
+    ])); r++
+  })
+  const totDifXL = totPresXL - totGastXL
+  h2.push(xlRow(r, [
+    { v: 'TOTAL GENERAL', s: S.totalTxt }, { v: '', s: S.total }, { v: '', s: S.total }, { v: '', s: S.total },
+    { v: totPresXL, s: S.total, n: true }, { v: totGastXL, s: S.total, n: true },
+    { v: totDifXL, s: totDifXL >= 0 ? S.numVerdeRow : S.numRojoRow, n: true },
+    { v: totPresXL > 0 ? totGastXL / totPresXL : 0, s: S.pct, n: true }, { v: '', s: S.total },
+  ])); r++
+
+  const sheet2 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetFormatPr defaultRowHeight="16"/>
+  <cols>
+    <col min="1" max="1" width="10" customWidth="1"/><col min="2" max="2" width="28" customWidth="1"/>
+    <col min="3" max="3" width="22" customWidth="1"/><col min="4" max="4" width="25" customWidth="1"/>
+    <col min="5" max="5" width="20" customWidth="1"/><col min="6" max="6" width="20" customWidth="1"/>
+    <col min="7" max="7" width="20" customWidth="1"/><col min="8" max="8" width="14" customWidth="1"/>
+    <col min="9" max="9" width="18" customWidth="1"/>
+  </cols>
+  <sheetData>${h2.join('')}</sheetData>
+  <autoFilter ref="A3:I3"/>
+</worksheet>`
+
+  // ── Ensamblado del ZIP (XLSX) ──────────────────────────────
+  const encoder = new TextEncoder()
+  function crc32(buf) {
+    const table = new Int32Array(256)
+    for (let i = 0; i < 256; i++) {
+      let c = i
+      for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
+      table[i] = c
+    }
+    let crc = -1
+    for (let i = 0; i < buf.length; i++) crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8)
+    return (crc ^ -1) >>> 0
+  }
+  function u16le(n) { return [n & 0xFF, (n >> 8) & 0xFF] }
+  function u32le(n) { return [n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF] }
+  function zipEntry(name, content) {
+    const nameBytes = encoder.encode(name)
+    const contentBytes = encoder.encode(content)
+    const crc = crc32(contentBytes)
+    const local = new Uint8Array([
+      0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      ...u32le(crc), ...u32le(contentBytes.length), ...u32le(contentBytes.length),
+      ...u16le(nameBytes.length), 0x00, 0x00, ...nameBytes, ...contentBytes,
+    ])
+    return { local, name: nameBytes, crc, size: contentBytes.length }
+  }
+
+  const files = [
+    { name: '[Content_Types].xml', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>` },
+    { name: '_rels/.rels', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
+    { name: 'xl/workbook.xml', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Cash Flow" sheetId="1" r:id="rId1"/><sheet name="Presupuesto vs Real" sheetId="2" r:id="rId2"/></sheets></workbook>` },
+    { name: 'xl/_rels/workbook.xml.rels', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+    { name: 'xl/styles.xml', content: stylesXmlDirectorio },
+    { name: 'xl/worksheets/sheet1.xml', content: sheet1 },
+    { name: 'xl/worksheets/sheet2.xml', content: sheet2 },
+  ]
+
+  const parts = [], central = []
+  let offset = 0
+  files.forEach(f => {
+    const e = zipEntry(f.name, f.content)
+    parts.push(e.local)
+    const nameBytes = encoder.encode(f.name)
+    const cd = new Uint8Array([
+      0x50, 0x4B, 0x01, 0x02, 0x14, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      ...u32le(e.crc), ...u32le(e.size), ...u32le(e.size), ...u16le(nameBytes.length),
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, ...u32le(offset), ...nameBytes,
+    ])
+    central.push(cd)
+    offset += e.local.length
+  })
+  const centralBuf = central.reduce((acc, c) => { const b = new Uint8Array(acc.length + c.length); b.set(acc); b.set(c, acc.length); return b }, new Uint8Array(0))
+  const eocd = new Uint8Array([
+    0x50, 0x4B, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00,
+    ...u16le(files.length), ...u16le(files.length), ...u32le(centralBuf.length), ...u32le(offset), 0x00, 0x00,
+  ])
+  const totalSize = parts.reduce((s, p) => s + p.length, 0) + centralBuf.length + eocd.length
+  const zipBuf = new Uint8Array(totalSize)
+  let pos = 0
+  parts.forEach(p => { zipBuf.set(p, pos); pos += p.length })
+  zipBuf.set(centralBuf, pos); pos += centralBuf.length
+  zipBuf.set(eocd, pos)
+
+  const blob = new Blob([zipBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `Directorio_CashFlow_${datos.hoy}.xlsx`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function colorSemaforo(pct, sinPresupuesto) {
   if (sinPresupuesto) return 'bg-slate-300'
   if (pct > 100) return 'bg-red-500'
@@ -201,15 +641,50 @@ function TopNav({ perfil }) {
 export default function DashboardDirectorio() {
   const { perfil } = useAuth()
   const [tab, setTab] = useState('cashflow') // 'cashflow' | 'presupuesto'
+  const [exportando, setExportando] = useState(false)
+  const [errorExport, setErrorExport] = useState('')
+
+  async function handleExportar() {
+    setExportando(true); setErrorExport('')
+    try {
+      const datos = await cargarDatosExportDirectorio()
+      generarExcelDirectorio(datos)
+    } catch (err) {
+      console.error('[Exportar Excel]', err)
+      setErrorExport('No se pudo generar el Excel. Intentá de nuevo.')
+    } finally {
+      setExportando(false)
+    }
+  }
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
       <TopNav perfil={perfil} />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
-        <div className="mb-6">
-          <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Panel de Directorio</h1>
-          <p className="text-slate-400 text-sm mt-0.5">Vista consolidada de la posición financiera — solo lectura</p>
+        <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Panel de Directorio</h1>
+            <p className="text-slate-400 text-sm mt-0.5">Vista consolidada de la posición financiera — solo lectura</p>
+          </div>
+          <div className="text-right">
+            <button onClick={handleExportar} disabled={exportando}
+              className="inline-flex items-center gap-2 text-white text-sm font-semibold
+                         px-4 py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50"
+              style={{ backgroundColor: '#059669' }}
+              onMouseEnter={e => !exportando && (e.currentTarget.style.backgroundColor = '#047857')}
+              onMouseLeave={e => e.currentTarget.style.backgroundColor = '#059669'}>
+              {exportando ? (
+                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+              )}
+              {exportando ? 'Generando…' : 'Exportar a Excel'}
+            </button>
+            {errorExport && <p className="text-red-600 text-xs mt-1.5">{errorExport}</p>}
+          </div>
         </div>
 
         <div className="flex items-center gap-1 mb-6 border-b border-slate-200">
