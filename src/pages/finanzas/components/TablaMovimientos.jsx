@@ -59,6 +59,17 @@ const LABEL_CAT = {
   otro:              'Otro',
 }
 
+// Categoría → tipo de movimiento (para recalcular al editar). FIMA queda afuera
+// porque su tipo depende del subtipo (rescate/suscripción), no editable acá.
+const CATEGORIA_TIPO = {
+  factura:           'egreso',
+  ingreso_cliente:   'ingreso',
+  sueldo:            'egreso',
+  impuesto:          'egreso',
+  debito_automatico: 'egreso',
+  otro:              'egreso',
+}
+
 const CATEGORIAS_FILTRO = [
   { value: '',                  label: 'Todas las categorías' },
   { value: 'factura',           label: 'Factura' },
@@ -74,7 +85,7 @@ const CATEGORIAS_FILTRO = [
 // COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════════
 export default function TablaMovimientos({
-  movimientos, obras, cargando, userId, onEliminar, onEjecutado, onNota,
+  movimientos, obras, rubros, cargando, userId, onEliminar, onEjecutado, onEditado, onNota,
 }) {
   // ── Filtros ────────────────────────────────────────────────
   const periodoActual = (() => {
@@ -82,10 +93,12 @@ export default function TablaMovimientos({
     return `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`
   })()
 
-  const [filtroPeriodo,   setFiltroPeriodo]   = useState(periodoActual)
-  const [filtroCategoria, setFiltroCategoria] = useState('')
-  const [filtroEstado,    setFiltroEstado]    = useState('')  // '' | 'proyectado' | 'ejecutado'
-  const [filtroObra,      setFiltroObra]      = useState('')
+  const [filtroPeriodo,    setFiltroPeriodo]    = useState(periodoActual)
+  const [filtroCategoria,  setFiltroCategoria]  = useState('')
+  const [filtroEstado,     setFiltroEstado]     = useState('')  // '' | 'proyectado' | 'ejecutado'
+  const [filtroObra,       setFiltroObra]       = useState('')
+  const [filtroFechaDesde, setFiltroFechaDesde] = useState('')
+  const [filtroBusqueda,   setFiltroBusqueda]   = useState('')
 
   // ── Ejecución inline ───────────────────────────────────────
   const [ejecutandoId,  setEjecutandoId]  = useState(null)
@@ -94,19 +107,34 @@ export default function TablaMovimientos({
   const [guardandoEjec, setGuardandoEjec] = useState(false)
   const [errorEjec,     setErrorEjec]     = useState('')
 
+  // ── Edición inline ──────────────────────────────────────────
+  const [filaEditando,    setFilaEditando]    = useState(null)
+  const [valoresEdicion,  setValoresEdicion]  = useState({})
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false)
+  const [errorEdicion,    setErrorEdicion]    = useState('')
+
   // ── Confirmación de eliminación ───────────────────────────
   const [confirmarElim, setConfirmarElim] = useState(null) // id
 
   // ── Filtrado en memoria ────────────────────────────────────
   const filtrados = useMemo(() => {
+    const busqueda = filtroBusqueda.trim().toLowerCase()
     return movimientos.filter(m => {
-      if (filtroPeriodo   && m.periodo   !== filtroPeriodo)   return false
-      if (filtroCategoria && m.categoria !== filtroCategoria) return false
-      if (filtroEstado    && m.estado    !== filtroEstado)    return false
-      if (filtroObra      && m.obra_id   !== filtroObra)      return false
+      if (filtroPeriodo    && m.periodo    !== filtroPeriodo)    return false
+      if (filtroCategoria  && m.categoria  !== filtroCategoria)  return false
+      if (filtroEstado     && m.estado     !== filtroEstado)     return false
+      if (filtroObra       && m.obra_id    !== filtroObra)       return false
+      if (filtroFechaDesde && (!m.fecha_pago || m.fecha_pago < filtroFechaDesde)) return false
+      if (busqueda) {
+        const campos = [
+          m.proveedor_cliente, m.numero_factura, m.concepto,
+          m.obras?.codigo, m.obras?.nombre,
+        ].filter(Boolean).join(' ').toLowerCase()
+        if (!campos.includes(busqueda)) return false
+      }
       return true
     })
-  }, [movimientos, filtroPeriodo, filtroCategoria, filtroEstado, filtroObra])
+  }, [movimientos, filtroPeriodo, filtroCategoria, filtroEstado, filtroObra, filtroFechaDesde, filtroBusqueda])
 
   // ── Totales del período filtrado ───────────────────────────
   const totales = useMemo(() => {
@@ -165,12 +193,70 @@ export default function TablaMovimientos({
     setConfirmarElim(null)
   }
 
+  // ── Iniciar edición ─────────────────────────────────────────
+  function handleIniciarEdicion(m) {
+    setFilaEditando(m.id)
+    setErrorEdicion('')
+    setValoresEdicion({
+      proveedor_cliente: m.proveedor_cliente ?? '',
+      numero_factura:    m.numero_factura ?? '',
+      categoria:         m.categoria,
+      obra_id:           m.obra_id ?? '',
+      rubro_id:          m.rubro_id ?? '',
+      fecha_pago:        m.fecha_pago ?? '',
+      monto_bruto:       String(m.monto_bruto ?? ''),
+      concepto:          m.concepto ?? '',
+      estado:            m.estado,
+    })
+  }
+
+  function handleCancelarEdicion() {
+    setFilaEditando(null)
+    setValoresEdicion({})
+    setErrorEdicion('')
+  }
+
+  // ── Guardar edición ─────────────────────────────────────────
+  async function handleGuardarEdicion(mov) {
+    setErrorEdicion('')
+    if (!valoresEdicion.categoria) { setErrorEdicion('Seleccioná una categoría.'); return }
+    if (!valoresEdicion.fecha_pago) { setErrorEdicion('Elegí una fecha de pago.'); return }
+    const monto = Number(valoresEdicion.monto_bruto)
+    if (!valoresEdicion.monto_bruto || isNaN(monto) || monto <= 0) {
+      setErrorEdicion('El monto tiene que ser un número mayor a 0.'); return
+    }
+
+    const payload = {
+      proveedor_cliente: valoresEdicion.proveedor_cliente.trim() || null,
+      numero_factura:    valoresEdicion.numero_factura.trim()    || null,
+      categoria:         valoresEdicion.categoria,
+      obra_id:           valoresEdicion.obra_id  || null,
+      rubro_id:          valoresEdicion.rubro_id || null,
+      fecha_pago:        valoresEdicion.fecha_pago,
+      monto_bruto:       monto,
+      concepto:          valoresEdicion.concepto.trim() || null,
+      estado:            valoresEdicion.estado,
+    }
+    if (CATEGORIA_TIPO[valoresEdicion.categoria]) payload.tipo = CATEGORIA_TIPO[valoresEdicion.categoria]
+    if (valoresEdicion.estado === 'ejecutado' && mov.estado !== 'ejecutado') payload.monto_neto = monto
+    if (valoresEdicion.estado === 'proyectado') payload.monto_neto = null
+
+    setGuardandoEdicion(true)
+    const { error: updError } = await supabase.from('movimientos').update(payload).eq('id', mov.id)
+    setGuardandoEdicion(false)
+
+    if (updError) { setErrorEdicion('No se pudo guardar el cambio.'); return }
+    setFilaEditando(null)
+    setValoresEdicion({})
+    onEditado()
+  }
+
   // ── RENDER ─────────────────────────────────────────────────
   return (
     <div className="space-y-4">
 
       {/* ── Filtros ─────────────────────────────────────────── */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {/* Período */}
           <div>
@@ -203,6 +289,31 @@ export default function TablaMovimientos({
               <option value="">Todas</option>
               {obras.map(o => <option key={o.id} value={o.id}>{o.codigo} · {o.nombre}</option>)}
             </select>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Fecha desde */}
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Fecha desde</label>
+            <div className="flex items-center gap-2">
+              <input type="date" value={filtroFechaDesde}
+                onChange={e => setFiltroFechaDesde(e.target.value)} className={selCls} />
+              {filtroFechaDesde && (
+                <button onClick={() => setFiltroFechaDesde('')}
+                  className="text-xs text-slate-400 hover:text-slate-600 shrink-0">
+                  Sacar
+                </button>
+              )}
+            </div>
+          </div>
+          {/* Búsqueda */}
+          <div className="sm:col-span-2">
+            <label className="block text-xs font-medium text-slate-500 mb-1">
+              Buscar (proveedor, factura, concepto, obra)
+            </label>
+            <input type="text" placeholder="Ej: startech, 4-1596, obra 678…"
+              value={filtroBusqueda} onChange={e => setFiltroBusqueda(e.target.value)}
+              className={selCls} />
           </div>
         </div>
       </div>
@@ -245,18 +356,35 @@ export default function TablaMovimientos({
               <tbody>
                 {filtrados.map(m => (
                   <>
-                    {/* ── Fila principal ─────────────────────── */}
-                    <FilaMovimiento
-                      key={m.id}
-                      mov={m}
-                      ejecutandoEsta={ejecutandoId === m.id}
-                      confirmarElim={confirmarElim === m.id}
-                      onEjecutar={() => handleIniciarEjecucion(m.id)}
-                      onNotas={() => onNota(m)}
-                      onEliminar={() => setConfirmarElim(m.id)}
-                      onCancelarElim={() => setConfirmarElim(null)}
-                      onConfirmarElim={() => handleEliminarConfirmado(m.id)}
-                    />
+                    {/* ── Fila de edición o fila principal ─────── */}
+                    {filaEditando === m.id ? (
+                      <FilaEdicionMovimiento
+                        key={m.id}
+                        mov={m}
+                        valores={valoresEdicion}
+                        obras={obras}
+                        rubros={rubros}
+                        guardando={guardandoEdicion}
+                        error={errorEdicion}
+                        onChange={cambios => setValoresEdicion(v => ({ ...v, ...cambios }))}
+                        onGuardar={() => handleGuardarEdicion(m)}
+                        onCancelar={handleCancelarEdicion}
+                      />
+                    ) : (
+                      <FilaMovimiento
+                        key={m.id}
+                        mov={m}
+                        ejecutandoEsta={ejecutandoId === m.id}
+                        confirmarElim={confirmarElim === m.id}
+                        deshabilitada={filaEditando !== null}
+                        onEditar={() => handleIniciarEdicion(m)}
+                        onEjecutar={() => handleIniciarEjecucion(m.id)}
+                        onNotas={() => onNota(m)}
+                        onEliminar={() => setConfirmarElim(m.id)}
+                        onCancelarElim={() => setConfirmarElim(null)}
+                        onConfirmarElim={() => handleEliminarConfirmado(m.id)}
+                      />
+                    )}
 
                     {/* ── Panel de ejecución inline ──────────── */}
                     {ejecutandoId === m.id && (
@@ -317,7 +445,7 @@ export default function TablaMovimientos({
 // ══════════════════════════════════════════════════════════════
 // SUBCOMPONENTE: FilaMovimiento
 // ══════════════════════════════════════════════════════════════
-function FilaMovimiento({ mov: m, ejecutandoEsta, confirmarElim, onEjecutar, onNotas, onEliminar, onCancelarElim, onConfirmarElim }) {
+function FilaMovimiento({ mov: m, ejecutandoEsta, confirmarElim, deshabilitada, onEditar, onEjecutar, onNotas, onEliminar, onCancelarElim, onConfirmarElim }) {
   const esIngreso = m.tipo === 'ingreso'
 
   // Conteo de notas (viene como campo agregado si se hizo join, si no es null/undefined)
@@ -390,19 +518,25 @@ function FilaMovimiento({ mov: m, ejecutandoEsta, confirmarElim, onEjecutar, onN
           </div>
         ) : (
           <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+            {/* Editar */}
+            <button onClick={onEditar} disabled={deshabilitada}
+              className="text-xs font-medium bg-slate-600 hover:bg-slate-700
+                         text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
+              Editar
+            </button>
             {/* Ejecutar (solo proyectados) */}
             {m.estado === 'proyectado' && (
-              <button onClick={onEjecutar}
+              <button onClick={onEjecutar} disabled={deshabilitada}
                 className="text-xs font-medium bg-emerald-600 hover:bg-emerald-700
-                           text-white px-2.5 py-1.5 rounded-md transition-colors">
+                           text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
                 Ejecutar
               </button>
             )}
             {/* Notas (solo facturas) */}
             {m.categoria === 'factura' && (
-              <button onClick={onNotas}
+              <button onClick={onNotas} disabled={deshabilitada}
                 className="relative text-xs font-medium bg-blue-600 hover:bg-blue-700
-                           text-white px-2.5 py-1.5 rounded-md transition-colors">
+                           text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
                 Notas
                 {cantNotas > 0 && (
                   <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-orange-500 text-white
@@ -413,15 +547,109 @@ function FilaMovimiento({ mov: m, ejecutandoEsta, confirmarElim, onEjecutar, onN
               </button>
             )}
             {/* Eliminar */}
-            <button onClick={onEliminar}
+            <button onClick={onEliminar} disabled={deshabilitada}
               className="text-xs font-medium bg-red-500 hover:bg-red-600
-                         text-white px-2.5 py-1.5 rounded-md transition-colors">
+                         text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
               Eliminar
             </button>
           </div>
         )}
       </td>
     </tr>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// SUBCOMPONENTE: FilaEdicionMovimiento
+// Fila de edición inline (reemplaza la fila principal mientras se edita)
+// ══════════════════════════════════════════════════════════════
+function FilaEdicionMovimiento({ mov, valores, obras, rubros, guardando, error, onChange, onGuardar, onCancelar }) {
+  const rubrosFiltrados = (rubros ?? []).filter(r =>
+    r.activo && (valores.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
+  )
+
+  return (
+    <tr className="bg-cyan-50/60 border-b border-cyan-100">
+      <td colSpan={9} className="px-4 py-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          <Campo label="Proveedor / Cliente">
+            <input type="text" value={valores.proveedor_cliente ?? ''}
+              onChange={e => onChange({ proveedor_cliente: e.target.value })} className={inCls} />
+          </Campo>
+          <Campo label="Número de factura">
+            <input type="text" value={valores.numero_factura ?? ''}
+              onChange={e => onChange({ numero_factura: e.target.value })} className={inCls} />
+          </Campo>
+          <Campo label="Categoría">
+            <select value={valores.categoria ?? ''}
+              onChange={e => onChange({ categoria: e.target.value })} className={selCls}>
+              {CATEGORIAS_FILTRO.filter(c => c.value).map(c => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+              <option value="fima">FIMA</option>
+            </select>
+          </Campo>
+          <Campo label="Obra">
+            <select value={valores.obra_id ?? ''}
+              onChange={e => onChange({ obra_id: e.target.value, rubro_id: '' })} className={selCls}>
+              <option value="">— Sin obra / General —</option>
+              {obras.map(o => <option key={o.id} value={o.id}>{o.codigo} · {o.nombre}</option>)}
+            </select>
+          </Campo>
+          <Campo label="Rubro">
+            <select value={valores.rubro_id ?? ''}
+              onChange={e => onChange({ rubro_id: e.target.value })} className={selCls}>
+              <option value="">— Sin rubro —</option>
+              {rubrosFiltrados.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+            </select>
+          </Campo>
+          <Campo label="Fecha de pago">
+            <input type="date" value={valores.fecha_pago ?? ''}
+              onChange={e => onChange({ fecha_pago: e.target.value })} className={inCls} />
+          </Campo>
+          <Campo label="Monto bruto">
+            <input type="number" step="0.01" value={valores.monto_bruto ?? ''}
+              onChange={e => onChange({ monto_bruto: e.target.value })} className={inCls + ' text-right'} />
+          </Campo>
+          <Campo label="Estado">
+            <select value={valores.estado ?? 'proyectado'}
+              onChange={e => onChange({ estado: e.target.value })} className={selCls}>
+              <option value="proyectado">Proyectado</option>
+              <option value="ejecutado">Ejecutado</option>
+            </select>
+          </Campo>
+          <Campo label="Concepto">
+            <input type="text" value={valores.concepto ?? ''}
+              onChange={e => onChange({ concepto: e.target.value })} className={inCls} />
+          </Campo>
+        </div>
+
+        <div className="flex items-center gap-2 mt-3">
+          {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
+          <div className="flex items-center gap-2 ml-auto">
+            <button onClick={onCancelar} disabled={guardando}
+              className="text-xs font-medium text-slate-500 hover:text-slate-700
+                         px-3 py-2 transition-colors disabled:opacity-50">
+              Cancelar
+            </button>
+            <button onClick={onGuardar} disabled={guardando}
+              className="text-xs font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50
+                         text-white px-4 py-2 rounded-lg transition-colors">
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </button>
+          </div>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function Campo({ label, children }) {
+  return (
+    <div>
+      <label className="block text-[11px] font-semibold text-slate-500 mb-1">{label}</label>
+      {children}
+    </div>
   )
 }
 
@@ -508,4 +736,8 @@ function Th({ children, align = 'left' }) {
 
 const selCls = `w-full px-2.5 py-2 text-sm rounded-lg border border-slate-200
   text-slate-900 bg-white focus:outline-none focus:ring-2
+  focus:ring-blue-500 focus:border-transparent`
+
+const inCls = `w-full px-2.5 py-2 text-sm rounded-lg border border-slate-200
+  text-slate-900 placeholder:text-slate-300 bg-white focus:outline-none focus:ring-2
   focus:ring-blue-500 focus:border-transparent`

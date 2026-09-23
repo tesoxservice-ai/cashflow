@@ -179,11 +179,19 @@ export default function CashFlow() {
   const [filtroCuenta, setFiltroCuenta] = useState('')
   const [filtroEstado, setFiltroEstado] = useState('')
   const [horizonte,    setHorizonte]    = useState(90)
+  const [filtroFechaDesde, setFiltroFechaDesde] = useState('')
+  const [filtroCategoria,  setFiltroCategoria]  = useState('')
+  const [filtroBusqueda,   setFiltroBusqueda]   = useState('')
 
   const [filaEditando,   setFilaEditando]   = useState(null)
   const [valoresEdicion, setValoresEdicion] = useState({})
   const [guardandoEdicion, setGuardandoEdicion] = useState(false)
   const [errorEdicion,     setErrorEdicion]     = useState('')
+
+  const [filaAjustando,   setFilaAjustando]   = useState(null)
+  const [valorAjuste,     setValorAjuste]     = useState('')
+  const [guardandoAjuste, setGuardandoAjuste] = useState(false)
+  const [errorAjuste,     setErrorAjuste]     = useState('')
 
   useEffect(() => {
     supabase
@@ -221,6 +229,7 @@ export default function CashFlow() {
       `)
       .order('fecha_pago', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true })
+      .order('id',         { ascending: true })
 
     if (movErr) { setError('No se pudieron cargar los movimientos.'); setCargando(false); return }
 
@@ -295,14 +304,32 @@ export default function CashFlow() {
 
   const filasFiltradas = useMemo(() => {
     const fechaLimite = fechaFutura(horizonte)
+    const busqueda = filtroBusqueda.trim().toLowerCase()
     return movimientosConSaldo.filter(m => {
       const fecha = m.fecha_pago ?? m.periodo
       if (fecha && fecha > fechaLimite) return false
-      if (filtroCuenta && m.cuenta_id !== filtroCuenta) return false
-      if (filtroEstado && m.estado    !== filtroEstado) return false
+      if (filtroFechaDesde && fecha && fecha < filtroFechaDesde) return false
+      if (filtroCuenta   && m.cuenta_id !== filtroCuenta) return false
+      if (filtroEstado   && m.estado    !== filtroEstado) return false
+      if (filtroCategoria && m.categoria !== filtroCategoria) return false
+      if (busqueda) {
+        const texto = [m.proveedor_cliente, m.numero_factura, m.concepto, m.obras?.codigo, m.obras?.nombre]
+          .filter(Boolean).join(' ').toLowerCase()
+        if (!texto.includes(busqueda)) return false
+      }
       return true
     })
-  }, [movimientosConSaldo, horizonte, filtroCuenta, filtroEstado])
+  }, [movimientosConSaldo, horizonte, filtroCuenta, filtroEstado, filtroFechaDesde, filtroCategoria, filtroBusqueda])
+
+  const puntosExtremos = useMemo(() => {
+    if (filasFiltradas.length === 0) return null
+    let max = filasFiltradas[0], min = filasFiltradas[0]
+    for (const m of filasFiltradas) {
+      if (m.saldoAcumulado > max.saldoAcumulado) max = m
+      if (m.saldoAcumulado < min.saldoAcumulado) min = m
+    }
+    return { max, min }
+  }, [filasFiltradas])
 
   const totales = useMemo(() => {
     let ingresos = 0, egresos = 0
@@ -329,6 +356,17 @@ export default function CashFlow() {
     setErrorEdicion('')
   }
 
+  async function handleBorrarEdicion(id) {
+    if (!window.confirm('¿Seguro que querés borrar este movimiento? No se puede deshacer.')) return
+    setGuardandoEdicion(true)
+    const { error: delError } = await supabase.from('movimientos').delete().eq('id', id)
+    setGuardandoEdicion(false)
+    if (delError) { setErrorEdicion('No se pudo borrar el movimiento.'); return }
+    setFilaEditando(null)
+    setValoresEdicion({})
+    await cargarMovimientos()
+  }
+
   async function handleGuardarEdicion(id) {
     setErrorEdicion('')
     if (!valoresEdicion.fecha_pago) { setErrorEdicion('Elegí una fecha.'); return }
@@ -353,6 +391,66 @@ export default function CashFlow() {
 
     setFilaEditando(null)
     setValoresEdicion({})
+    await cargarMovimientos()
+  }
+
+  function handleIniciarAjuste(m) {
+    setFilaAjustando(m.id)
+    setErrorAjuste('')
+    setValorAjuste(String(m.saldoAcumulado.toFixed(2)))
+  }
+
+  function handleCancelarAjuste() {
+    setFilaAjustando(null)
+    setValorAjuste('')
+    setErrorAjuste('')
+  }
+
+  async function handleGuardarAjuste(m) {
+    setErrorAjuste('')
+    const deseado = Number(valorAjuste)
+    if (valorAjuste === '' || isNaN(deseado)) { setErrorAjuste('Ingresá un monto válido.'); return }
+
+    const delta = deseado - m.saldoAcumulado
+    if (Math.abs(delta) < 0.01) { handleCancelarAjuste(); return }
+
+    const galicia = cuentas.find(c => c.nombre === 'Galicia')
+    if (!galicia) { setErrorAjuste('No se encontró la cuenta Galicia.'); return }
+
+    // El ajuste se fecha UN DIA ANTES que esta fila (no el mismo dia): asi el
+    // orden (que primero mira fecha_pago) lo pone siempre antes de esta fila
+    // de forma segura, sin depender del created_at -- varias filas cargadas
+    // juntas en un mismo lote pueden compartir el mismo created_at, y ahi el
+    // truco de "un segundo antes" fallaba (se colaba antes de sus hermanas
+    // del mismo dia tambien).
+    const fechaAjusteDate = new Date(m.fecha_pago + 'T00:00:00')
+    fechaAjusteDate.setDate(fechaAjusteDate.getDate() - 1)
+    const fechaAjuste = `${fechaAjusteDate.getFullYear()}-${String(fechaAjusteDate.getMonth() + 1).padStart(2, '0')}-${String(fechaAjusteDate.getDate()).padStart(2, '0')}`
+
+    setGuardandoAjuste(true)
+    const tipo = delta >= 0 ? 'ingreso' : 'egreso'
+    const monto = Math.abs(delta)
+    const { error: insError } = await supabase.from('movimientos').insert({
+      tipo, categoria: 'otro',
+      proveedor_cliente: 'Ajuste manual de saldo',
+      numero_factura: null, forma_pago: null,
+      monto_bruto: monto,
+      monto_neto: m.estado === 'ejecutado' ? monto : null,
+      estado: m.estado,
+      periodo: periodoDeStr(fechaAjuste),
+      fecha_pago: fechaAjuste,
+      fecha_factura: null,
+      concepto: `Ajuste manual: saldo del ${fmtFecha(m.fecha_pago)} (${m.proveedor_cliente ?? m.concepto ?? 'movimiento'}) pasa de ${fmtARS(m.saldoAcumulado)} a ${fmtARS(deseado)}`,
+      obra_id: null, rubro_id: null,
+      cuenta_id: galicia.id,
+      created_by: user.id,
+    })
+    setGuardandoAjuste(false)
+
+    if (insError) { setErrorAjuste('No se pudo guardar el ajuste.'); return }
+
+    setFilaAjustando(null)
+    setValorAjuste('')
     await cargarMovimientos()
   }
 
@@ -427,6 +525,24 @@ export default function CashFlow() {
           />
         </div>
 
+        {/* Cards de picos (maximo/minimo dentro de lo filtrado) */}
+        {puntosExtremos && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+            <CardResumen
+              label="Punto más alto (con más guita)"
+              valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
+              subLabel={`El ${fmtFecha(puntosExtremos.max.fecha_pago)} — ${puntosExtremos.max.proveedor_cliente ?? puntosExtremos.max.concepto ?? ''}`}
+              positivo={true}
+            />
+            <CardResumen
+              label="Punto más bajo (con menos guita)"
+              valor={fmtARS(puntosExtremos.min.saldoAcumulado)}
+              subLabel={`El ${fmtFecha(puntosExtremos.min.fecha_pago)} — ${puntosExtremos.min.proveedor_cliente ?? puntosExtremos.min.concepto ?? ''}`}
+              positivo={puntosExtremos.min.saldoAcumulado >= 0}
+            />
+          </div>
+        )}
+
         {/* Filtros */}
         <div className="bg-white border border-slate-100 rounded-2xl p-4 mb-4 shadow-sm">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -454,6 +570,56 @@ export default function CashFlow() {
                 <option value="proyectado">Solo proyectados</option>
                 <option value="ejecutado">Solo ejecutados</option>
               </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Categoría</label>
+              <select value={filtroCategoria} onChange={e => setFiltroCategoria(e.target.value)} className={selCls}>
+                <option value="">Todas</option>
+                {Object.entries(LABEL_CAT).map(([val, label]) => (
+                  <option key={val} value={val}>{label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Fecha desde</label>
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={filtroFechaDesde}
+                  onChange={e => setFiltroFechaDesde(e.target.value)}
+                  className={selCls}
+                />
+                <button
+                  type="button"
+                  onClick={() => setFiltroFechaDesde(hoyISO())}
+                  className="shrink-0 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200
+                             text-slate-600 hover:bg-slate-50 transition-colors whitespace-nowrap"
+                >
+                  Desde hoy
+                </button>
+                {filtroFechaDesde && (
+                  <button
+                    type="button"
+                    onClick={() => setFiltroFechaDesde('')}
+                    className="shrink-0 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200
+                               text-slate-400 hover:bg-slate-50 transition-colors"
+                  >
+                    Sacar
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                Buscar (proveedor, factura, concepto, obra)
+              </label>
+              <input
+                type="text"
+                value={filtroBusqueda}
+                onChange={e => setFiltroBusqueda(e.target.value)}
+                placeholder="Ej: startech, 4-1596, obra 678…"
+                className={selCls}
+              />
             </div>
           </div>
         </div>
@@ -491,6 +657,15 @@ export default function CashFlow() {
               onCambiarEdicion={cambios => setValoresEdicion(v => ({ ...v, ...cambios }))}
               onGuardarEdicion={handleGuardarEdicion}
               onCancelarEdicion={handleCancelarEdicion}
+              onBorrarEdicion={handleBorrarEdicion}
+              filaAjustando={filaAjustando}
+              valorAjuste={valorAjuste}
+              guardandoAjuste={guardandoAjuste}
+              errorAjuste={errorAjuste}
+              onIniciarAjuste={handleIniciarAjuste}
+              onCambiarAjuste={setValorAjuste}
+              onGuardarAjuste={handleGuardarAjuste}
+              onCancelarAjuste={handleCancelarAjuste}
             />
 
             {/* Pie de totales */}
@@ -523,7 +698,9 @@ export default function CashFlow() {
 function TablaCashFlow({
   filas, saldoInicial,
   filaEditando, valoresEdicion, guardandoEdicion, errorEdicion,
-  onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion,
+  onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion, onBorrarEdicion,
+  filaAjustando, valorAjuste, guardandoAjuste, errorAjuste,
+  onIniciarAjuste, onCambiarAjuste, onGuardarAjuste, onCancelarAjuste,
 }) {
   const filasRender = useMemo(() => {
     const resultado   = []
@@ -580,6 +757,22 @@ function TablaCashFlow({
                     onChange={onCambiarEdicion}
                     onGuardar={() => onGuardarEdicion(m.id)}
                     onCancelar={onCancelarEdicion}
+                    onBorrar={() => onBorrarEdicion(m.id)}
+                  />
+                )
+              }
+
+              if (filaAjustando === m.id) {
+                return (
+                  <FilaAjusteSaldo
+                    key={fila.key}
+                    mov={m}
+                    valor={valorAjuste}
+                    guardando={guardandoAjuste}
+                    error={errorAjuste}
+                    onChange={onCambiarAjuste}
+                    onGuardar={() => onGuardarAjuste(m)}
+                    onCancelar={onCancelarAjuste}
                   />
                 )
               }
@@ -637,14 +830,23 @@ function TablaCashFlow({
                     )}
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <button
-                      onClick={() => onIniciarEdicion(m)}
-                      disabled={filaEditando !== null}
-                      className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                      style={{ color: '#0e7490' }}
-                    >
-                      Editar
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={() => onIniciarEdicion(m)}
+                        disabled={filaEditando !== null || filaAjustando !== null}
+                        className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        style={{ color: '#0e7490' }}
+                      >
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => onIniciarAjuste(m)}
+                        disabled={filaEditando !== null || filaAjustando !== null}
+                        className="text-xs font-semibold text-amber-600 hover:text-amber-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        Ajustar saldo
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )
@@ -679,7 +881,70 @@ function FilaSeparador({ label, saldoInicio }) {
   )
 }
 
-function FilaEdicionMovimiento({ mov, valores, guardando, error, onChange, onGuardar, onCancelar }) {
+function FilaAjusteSaldo({ mov, valor, guardando, error, onChange, onGuardar, onCancelar }) {
+  const nuevo = Number(valor)
+  const delta = !isNaN(nuevo) && valor !== '' ? nuevo - mov.saldoAcumulado : null
+
+  return (
+    <tr style={{ backgroundColor: '#fffbeb' }} className="border-b border-amber-100">
+      <td className="px-4 py-3" colSpan={9}>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Saldo acumulado actual</label>
+            <p className="text-sm text-slate-700 px-3 py-2 font-semibold tabular-nums">{fmtARS(mov.saldoAcumulado)}</p>
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-amber-700 mb-1">Saldo acumulado correcto</label>
+            <input
+              type="number"
+              step="0.01"
+              value={valor}
+              onChange={e => onChange(e.target.value)}
+              className="w-48 px-3 py-2 text-sm rounded-xl border border-amber-200 text-slate-900 bg-white
+                        focus:outline-none focus:ring-2 focus:border-transparent"
+              autoFocus
+            />
+          </div>
+          {delta !== null && Math.abs(delta) >= 0.01 && (
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-500 mb-1">Se va a cargar</label>
+              <p className={`text-sm font-semibold px-3 py-2 ${delta >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                {delta >= 0 ? 'Ingreso' : 'Egreso'} de {fmtARS(Math.abs(delta))}
+              </p>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 ml-auto">
+            {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
+            <button
+              onClick={onCancelar}
+              disabled={guardando}
+              className="px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-700
+                        transition-colors disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={onGuardar}
+              disabled={guardando}
+              className="px-4 py-2 text-sm font-semibold text-white rounded-xl transition-colors
+                        disabled:opacity-50 disabled:cursor-not-allowed bg-amber-600 hover:bg-amber-700"
+            >
+              {guardando ? 'Guardando…' : 'Guardar ajuste'}
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          Esto crea un movimiento nuevo de ajuste el día anterior a esta fila, para que esta fila y todo lo que
+          sigue queden corregidos en cascada. El movimiento de ajuste queda visible y se puede editar o borrar
+          como cualquier otro.
+        </p>
+      </td>
+    </tr>
+  )
+}
+
+function FilaEdicionMovimiento({ mov, valores, guardando, error, onChange, onGuardar, onCancelar, onBorrar }) {
   return (
     <tr style={{ backgroundColor: '#ecfeff' }} className="border-b border-cyan-100">
       <td className="px-4 py-3" colSpan={9}>
@@ -725,6 +990,14 @@ function FilaEdicionMovimiento({ mov, valores, guardando, error, onChange, onGua
 
           <div className="flex items-center gap-2 ml-auto">
             {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
+            <button
+              onClick={onBorrar}
+              disabled={guardando}
+              className="px-3 py-2 text-sm font-medium text-red-500 hover:text-red-700
+                        transition-colors disabled:opacity-50"
+            >
+              Borrar
+            </button>
             <button
               onClick={onCancelar}
               disabled={guardando}

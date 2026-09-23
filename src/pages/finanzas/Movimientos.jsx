@@ -258,10 +258,11 @@ export default function Movimientos() {
 
         {/* Tabla de movimientos */}
         <TablaMovimientos
-          movimientos={movimientos} obras={obras} cargando={cargando}
+          movimientos={movimientos} obras={obras} rubros={rubros} cargando={cargando}
           userId={user.id}
           onEliminar={handleEliminar}
           onEjecutado={cargarMovimientos}
+          onEditado={cargarMovimientos}
           onNota={mov => setModalNotas(mov)}
         />
 

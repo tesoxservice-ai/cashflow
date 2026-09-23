@@ -119,7 +119,7 @@ function ModalSaldo({ cuenta, saldoActual, userId, onCerrar, onGuardado }) {
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 export default function SaldosIniciales({ cuentas, userId, onActualizado }) {
-  const [expandido,     setExpandido]     = useState(true)
+  const [expandido,     setExpandido]     = useState(false)
   const [saldos,        setSaldos]        = useState([])
   const [cargando,      setCargando]      = useState(true)
   const [modalCuenta,   setModalCuenta]   = useState(null)
