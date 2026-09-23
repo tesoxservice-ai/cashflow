@@ -34,6 +34,20 @@ function generarOpcionesPeriodo() {
 const PERIODOS = generarOpcionesPeriodo()
 const FORM_VACIO = { rubro_id: '', concepto: '', periodo: PERIODOS[0].value, monto: '' }
 
+// Rubros que puede ver/elegir Operaciones al cargar presupuestos.
+// Es un filtro solo para esta pantalla: en Finanzas siguen apareciendo
+// todos los rubros activos, sin este recorte.
+const RUBROS_PERMITIDOS_OPERACIONES = [
+  'Materiales',
+  'Subcontratos',
+  'MO directa con Carg Sociales',
+  'Mano de obra indirecta con cargas',
+  'Vehiculos',
+  'Otros Gastos Operativos',
+  'Gastos Generales',
+  'Impuestos',
+]
+
 // ─── Íconos ───────────────────────────────────────────────────────────────────
 
 const IconBell = () => (
@@ -152,8 +166,10 @@ export default function Presupuestos() {
         .from('rubros').select('id, nombre').eq('tipo', 'obra').eq('activo', true).order('nombre')
       if (errorRubros) { setErrorGlobal('No se pudieron cargar los rubros.'); setCargandoObras(false); return }
 
+      const rubrosFiltrados = (dataRubros ?? []).filter(r => RUBROS_PERMITIDOS_OPERACIONES.includes(r.nombre))
+
       setObras(dataObras ?? [])
-      setRubros(dataRubros ?? [])
+      setRubros(rubrosFiltrados)
       setCargandoObras(false)
     }
     cargarMaestros()

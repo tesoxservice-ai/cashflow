@@ -207,6 +207,7 @@ export default function TablaMovimientos({
       monto_bruto:       String(m.monto_bruto ?? ''),
       concepto:          m.concepto ?? '',
       estado:            m.estado,
+      periodo:           m.periodo ?? '',
     })
   }
 
@@ -221,6 +222,7 @@ export default function TablaMovimientos({
     setErrorEdicion('')
     if (!valoresEdicion.categoria) { setErrorEdicion('Seleccioná una categoría.'); return }
     if (!valoresEdicion.fecha_pago) { setErrorEdicion('Elegí una fecha de pago.'); return }
+    if (!valoresEdicion.periodo) { setErrorEdicion('Elegí un período.'); return }
     const monto = Number(valoresEdicion.monto_bruto)
     if (!valoresEdicion.monto_bruto || isNaN(monto) || monto <= 0) {
       setErrorEdicion('El monto tiene que ser un número mayor a 0.'); return
@@ -233,6 +235,7 @@ export default function TablaMovimientos({
       obra_id:           valoresEdicion.obra_id  || null,
       rubro_id:          valoresEdicion.rubro_id || null,
       fecha_pago:        valoresEdicion.fecha_pago,
+      periodo:           valoresEdicion.periodo,
       monto_bruto:       monto,
       concepto:          valoresEdicion.concepto.trim() || null,
       estado:            valoresEdicion.estado,
@@ -606,6 +609,12 @@ function FilaEdicionMovimiento({ mov, valores, obras, rubros, guardando, error, 
           <Campo label="Fecha de pago">
             <input type="date" value={valores.fecha_pago ?? ''}
               onChange={e => onChange({ fecha_pago: e.target.value })} className={inCls} />
+          </Campo>
+          <Campo label="Período">
+            <select value={valores.periodo ?? ''}
+              onChange={e => onChange({ periodo: e.target.value })} className={selCls}>
+              {PERIODOS_FILTRO.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
           </Campo>
           <Campo label="Monto bruto">
             <input type="number" step="0.01" value={valores.monto_bruto ?? ''}
