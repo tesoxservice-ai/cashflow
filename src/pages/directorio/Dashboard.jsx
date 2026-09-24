@@ -976,10 +976,10 @@ function TabCashFlow() {
 
           {puntosExtremos && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <CardResumen label="Punto más alto (con más guita)" valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
+              <CardResumen label="Punto más alto" valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
                 color="text-emerald-600"
                 subLabel={`El ${fmtFecha(puntosExtremos.max.fecha_pago)} — ${puntosExtremos.max.proveedor_cliente ?? puntosExtremos.max.concepto ?? '—'}`} />
-              <CardResumen label="Punto más bajo (con menos guita)" valor={fmtARS(puntosExtremos.min.saldoAcumulado)}
+              <CardResumen label="Punto más bajo" valor={fmtARS(puntosExtremos.min.saldoAcumulado)}
                 color={puntosExtremos.min.saldoAcumulado >= 0 ? 'text-emerald-600' : 'text-red-600'}
                 subLabel={`El ${fmtFecha(puntosExtremos.min.fecha_pago)} — ${puntosExtremos.min.proveedor_cliente ?? puntosExtremos.min.concepto ?? '—'}`} />
             </div>

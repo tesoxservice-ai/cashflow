@@ -690,13 +690,13 @@ export default function CashFlow() {
         {puntosExtremos && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             <CardResumen
-              label="Punto más alto (con más guita)"
+              label="Punto más alto"
               valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
               subLabel={`El ${fmtFecha(puntosExtremos.max.fecha_pago)} — ${puntosExtremos.max.proveedor_cliente ?? puntosExtremos.max.concepto ?? ''}`}
               positivo={true}
             />
             <CardResumen
-              label="Punto más bajo (con menos guita)"
+              label="Punto más bajo"
               valor={fmtARS(puntosExtremos.min.saldoAcumulado)}
               subLabel={`El ${fmtFecha(puntosExtremos.min.fecha_pago)} — ${puntosExtremos.min.proveedor_cliente ?? puntosExtremos.min.concepto ?? ''}`}
               positivo={puntosExtremos.min.saldoAcumulado >= 0}
