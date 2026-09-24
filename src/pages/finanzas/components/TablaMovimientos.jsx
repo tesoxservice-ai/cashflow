@@ -1,16 +1,17 @@
 // pages/finanzas/components/TablaMovimientos.jsx
-// Tabla de movimientos con filtros, ejecución inline y acciones.
+// Tabla de movimientos con filtros y ejecución inline.
+// Editar/Eliminar viven en el Cash Flow — acá solo se carga nuevo y
+// se ejecuta (marca como pagado/cobrado) lo ya cargado.
 //
 // Props:
 //   movimientos   → array completo de movimientos (con joins rubros, obras, cuentas)
 //   obras         → array de obras (para el filtro por obra)
 //   cargando      → boolean
 //   userId        → id del usuario logueado (para ModalNotas)
-//   onEliminar    → async fn(id) — llamada tras confirmar eliminación
 //   onEjecutado   → fn() sin args — recarga el listado tras ejecutar
 //   onNota        → fn(movimiento) — abre el modal de notas (lo maneja el padre)
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, Fragment } from 'react'
 import { supabase } from '../../../supabaseClient'
 
 // ─────────────────────────────────────────────────────────────
@@ -59,31 +60,6 @@ const LABEL_CAT = {
   otro:              'Otro',
 }
 
-// Categoría → tipo de movimiento (para recalcular al editar). FIMA queda afuera
-// porque su tipo depende del subtipo (rescate/suscripción), no editable acá.
-const CATEGORIA_TIPO = {
-  factura:           'egreso',
-  ingreso_cliente:   'ingreso',
-  sueldo:            'egreso',
-  impuesto:          'egreso',
-  debito_automatico: 'egreso',
-  otro:              'egreso',
-}
-
-// Mismos rubros que ve Operaciones al cargar presupuestos, más "Ventas"
-// (que se usa para la categoría Ventas / ingreso_cliente).
-const RUBROS_PERMITIDOS_FINANZAS = [
-  'Materiales',
-  'Subcontratos',
-  'MO directa con Carg Sociales',
-  'Mano de obra indirecta con cargas',
-  'Vehículos',
-  'Otros Gastos Operativos',
-  'Gastos Generales',
-  'Impuestos',
-  'Ventas',
-]
-
 const CATEGORIAS_FILTRO = [
   { value: '',                  label: 'Todas las categorías' },
   { value: 'factura',           label: 'Factura' },
@@ -99,7 +75,7 @@ const CATEGORIAS_FILTRO = [
 // COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════════
 export default function TablaMovimientos({
-  movimientos, obras, rubros, cargando, userId, onEliminar, onEjecutado, onEditado, onNota,
+  movimientos, obras, cargando, userId, onEjecutado, onNota,
 }) {
   // ── Filtros ────────────────────────────────────────────────
   const periodoActual = (() => {
@@ -120,15 +96,6 @@ export default function TablaMovimientos({
   const [obsEjecucion,  setObsEjecucion]  = useState('')
   const [guardandoEjec, setGuardandoEjec] = useState(false)
   const [errorEjec,     setErrorEjec]     = useState('')
-
-  // ── Edición inline ──────────────────────────────────────────
-  const [filaEditando,    setFilaEditando]    = useState(null)
-  const [valoresEdicion,  setValoresEdicion]  = useState({})
-  const [guardandoEdicion, setGuardandoEdicion] = useState(false)
-  const [errorEdicion,    setErrorEdicion]    = useState('')
-
-  // ── Confirmación de eliminación ───────────────────────────
-  const [confirmarElim, setConfirmarElim] = useState(null) // id
 
   // ── Filtrado en memoria ────────────────────────────────────
   const filtrados = useMemo(() => {
@@ -199,80 +166,6 @@ export default function TablaMovimientos({
     setEjecutandoId(null)
     setGuardandoEjec(false)
     onEjecutado()
-  }
-
-  // ── Eliminar movimiento ────────────────────────────────────
-  async function handleEliminarConfirmado(id) {
-    await onEliminar(id)
-    setConfirmarElim(null)
-  }
-
-  // ── Iniciar edición ─────────────────────────────────────────
-  function handleIniciarEdicion(m) {
-    setFilaEditando(m.id)
-    setErrorEdicion('')
-    setValoresEdicion({
-      proveedor_cliente: m.proveedor_cliente ?? '',
-      numero_factura:    m.numero_factura ?? '',
-      categoria:         m.categoria,
-      obra_id:           m.obra_id ?? '',
-      rubro_id:          m.rubro_id ?? '',
-      fecha_pago:        m.fecha_pago ?? '',
-      monto_bruto:       String(m.monto_bruto ?? ''),
-      concepto:          m.concepto ?? '',
-      estado:            m.estado,
-      periodo:           m.periodo ?? '',
-    })
-  }
-
-  function handleCancelarEdicion() {
-    setFilaEditando(null)
-    setValoresEdicion({})
-    setErrorEdicion('')
-  }
-
-  // ── Guardar edición ─────────────────────────────────────────
-  async function handleGuardarEdicion(mov) {
-    setErrorEdicion('')
-    if (!valoresEdicion.categoria) { setErrorEdicion('Seleccioná una categoría.'); return }
-    if (!valoresEdicion.fecha_pago) { setErrorEdicion('Elegí una fecha de pago.'); return }
-    if (!valoresEdicion.periodo) { setErrorEdicion('Elegí un período.'); return }
-    const monto = Number(valoresEdicion.monto_bruto)
-    if (!valoresEdicion.monto_bruto || isNaN(monto) || monto <= 0) {
-      setErrorEdicion('El monto tiene que ser un número mayor a 0.'); return
-    }
-
-    // El rubro de una Venta siempre es "Ventas" -- se asigna solo, no se elige.
-    let rubroId = valoresEdicion.rubro_id || null
-    if (valoresEdicion.categoria === 'ingreso_cliente') {
-      const rubroVentas = (rubros ?? []).find(r => r.nombre === 'Ventas' && r.tipo === (valoresEdicion.obra_id ? 'obra' : 'general'))
-      rubroId = rubroVentas?.id ?? null
-    }
-
-    const payload = {
-      proveedor_cliente: valoresEdicion.proveedor_cliente.trim() || null,
-      numero_factura:    valoresEdicion.numero_factura.trim()    || null,
-      categoria:         valoresEdicion.categoria,
-      obra_id:           valoresEdicion.obra_id  || null,
-      rubro_id:          rubroId,
-      fecha_pago:        valoresEdicion.fecha_pago,
-      periodo:           valoresEdicion.periodo,
-      monto_bruto:       monto,
-      concepto:          valoresEdicion.concepto.trim() || null,
-      estado:            valoresEdicion.estado,
-    }
-    if (CATEGORIA_TIPO[valoresEdicion.categoria]) payload.tipo = CATEGORIA_TIPO[valoresEdicion.categoria]
-    if (valoresEdicion.estado === 'ejecutado' && mov.estado !== 'ejecutado') payload.monto_neto = monto
-    if (valoresEdicion.estado === 'proyectado') payload.monto_neto = null
-
-    setGuardandoEdicion(true)
-    const { error: updError } = await supabase.from('movimientos').update(payload).eq('id', mov.id)
-    setGuardandoEdicion(false)
-
-    if (updError) { setErrorEdicion('No se pudo guardar el cambio.'); return }
-    setFilaEditando(null)
-    setValoresEdicion({})
-    onEditado()
   }
 
   // ── RENDER ─────────────────────────────────────────────────
@@ -379,36 +272,14 @@ export default function TablaMovimientos({
               </thead>
               <tbody>
                 {filtrados.map(m => (
-                  <>
-                    {/* ── Fila de edición o fila principal ─────── */}
-                    {filaEditando === m.id ? (
-                      <FilaEdicionMovimiento
-                        key={m.id}
-                        mov={m}
-                        valores={valoresEdicion}
-                        obras={obras}
-                        rubros={rubros}
-                        guardando={guardandoEdicion}
-                        error={errorEdicion}
-                        onChange={cambios => setValoresEdicion(v => ({ ...v, ...cambios }))}
-                        onGuardar={() => handleGuardarEdicion(m)}
-                        onCancelar={handleCancelarEdicion}
-                      />
-                    ) : (
-                      <FilaMovimiento
-                        key={m.id}
-                        mov={m}
-                        ejecutandoEsta={ejecutandoId === m.id}
-                        confirmarElim={confirmarElim === m.id}
-                        deshabilitada={filaEditando !== null}
-                        onEditar={() => handleIniciarEdicion(m)}
-                        onEjecutar={() => handleIniciarEjecucion(m.id)}
-                        onNotas={() => onNota(m)}
-                        onEliminar={() => setConfirmarElim(m.id)}
-                        onCancelarElim={() => setConfirmarElim(null)}
-                        onConfirmarElim={() => handleEliminarConfirmado(m.id)}
-                      />
-                    )}
+                  <Fragment key={m.id}>
+                    <FilaMovimiento
+                      mov={m}
+                      ejecutandoEsta={ejecutandoId === m.id}
+                      deshabilitada={false}
+                      onEjecutar={() => handleIniciarEjecucion(m.id)}
+                      onNotas={() => onNota(m)}
+                    />
 
                     {/* ── Panel de ejecución inline ──────────── */}
                     {ejecutandoId === m.id && (
@@ -428,7 +299,7 @@ export default function TablaMovimientos({
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -469,7 +340,7 @@ export default function TablaMovimientos({
 // ══════════════════════════════════════════════════════════════
 // SUBCOMPONENTE: FilaMovimiento
 // ══════════════════════════════════════════════════════════════
-function FilaMovimiento({ mov: m, ejecutandoEsta, confirmarElim, deshabilitada, onEditar, onEjecutar, onNotas, onEliminar, onCancelarElim, onConfirmarElim }) {
+function FilaMovimiento({ mov: m, ejecutandoEsta, deshabilitada, onEjecutar, onNotas }) {
   const esIngreso = m.tipo === 'ingreso'
 
   // Conteo de notas (viene como campo agregado si se hizo join, si no es null/undefined)
@@ -527,164 +398,32 @@ function FilaMovimiento({ mov: m, ejecutandoEsta, confirmarElim, deshabilitada, 
       </td>
       {/* Acciones */}
       <td className="px-4 py-3">
-        {confirmarElim ? (
-          /* Confirmación de eliminación inline */
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
-            <span className="text-xs text-red-600 font-medium">¿Eliminar?</span>
-            <button onClick={onConfirmarElim}
-              className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded-md transition-colors">
-              Sí
-            </button>
-            <button onClick={onCancelarElim}
-              className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1 rounded-md transition-colors">
-              No
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
-            {/* Editar */}
-            <button onClick={onEditar} disabled={deshabilitada}
-              className="text-xs font-medium bg-slate-600 hover:bg-slate-700
+        <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+          {/* Ejecutar (solo proyectados) */}
+          {m.estado === 'proyectado' && (
+            <button onClick={onEjecutar} disabled={deshabilitada}
+              className="text-xs font-medium bg-emerald-600 hover:bg-emerald-700
                          text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
-              Editar
+              Ejecutar
             </button>
-            {/* Ejecutar (solo proyectados) */}
-            {m.estado === 'proyectado' && (
-              <button onClick={onEjecutar} disabled={deshabilitada}
-                className="text-xs font-medium bg-emerald-600 hover:bg-emerald-700
-                           text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
-                Ejecutar
-              </button>
-            )}
-            {/* Notas (solo facturas) */}
-            {m.categoria === 'factura' && (
-              <button onClick={onNotas} disabled={deshabilitada}
-                className="relative text-xs font-medium bg-blue-600 hover:bg-blue-700
-                           text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
-                Notas
-                {cantNotas > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-orange-500 text-white
-                                   text-[10px] font-bold rounded-full flex items-center justify-center">
-                    {cantNotas}
-                  </span>
-                )}
-              </button>
-            )}
-            {/* Eliminar */}
-            <button onClick={onEliminar} disabled={deshabilitada}
-              className="text-xs font-medium bg-red-500 hover:bg-red-600
+          )}
+          {/* Notas (solo facturas) */}
+          {m.categoria === 'factura' && (
+            <button onClick={onNotas} disabled={deshabilitada}
+              className="relative text-xs font-medium bg-blue-600 hover:bg-blue-700
                          text-white px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50">
-              Eliminar
+              Notas
+              {cantNotas > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-orange-500 text-white
+                                 text-[10px] font-bold rounded-full flex items-center justify-center">
+                  {cantNotas}
+                </span>
+              )}
             </button>
-          </div>
-        )}
-      </td>
-    </tr>
-  )
-}
-
-// ══════════════════════════════════════════════════════════════
-// SUBCOMPONENTE: FilaEdicionMovimiento
-// Fila de edición inline (reemplaza la fila principal mientras se edita)
-// ══════════════════════════════════════════════════════════════
-function FilaEdicionMovimiento({ mov, valores, obras, rubros, guardando, error, onChange, onGuardar, onCancelar }) {
-  const rubrosFiltrados = (rubros ?? []).filter(r =>
-    r.activo && RUBROS_PERMITIDOS_FINANZAS.includes(r.nombre)
-    && (valores.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
-  )
-
-  return (
-    <tr className="bg-cyan-50/60 border-b border-cyan-100">
-      <td colSpan={9} className="px-4 py-3">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          <Campo label="Proveedor / Cliente">
-            <input type="text" value={valores.proveedor_cliente ?? ''}
-              onChange={e => onChange({ proveedor_cliente: e.target.value })} className={inCls} />
-          </Campo>
-          <Campo label="Número de factura">
-            <input type="text" value={valores.numero_factura ?? ''}
-              onChange={e => onChange({ numero_factura: e.target.value })} className={inCls} />
-          </Campo>
-          <Campo label="Categoría">
-            <select value={valores.categoria ?? ''}
-              onChange={e => onChange({ categoria: e.target.value })} className={selCls}>
-              {CATEGORIAS_FILTRO.filter(c => c.value).map(c => (
-                <option key={c.value} value={c.value}>{c.label}</option>
-              ))}
-              <option value="fima">FIMA</option>
-            </select>
-          </Campo>
-          <Campo label="Obra">
-            <select value={valores.obra_id ?? ''}
-              onChange={e => onChange({ obra_id: e.target.value, rubro_id: '' })} className={selCls}>
-              <option value="">— Sin obra / General —</option>
-              {obras.map(o => <option key={o.id} value={o.id}>{o.codigo} · {o.nombre}</option>)}
-            </select>
-          </Campo>
-          <Campo label="Rubro">
-            {valores.categoria === 'ingreso_cliente' ? (
-              <p className="text-sm text-slate-500 px-3 py-2">Ventas (automático)</p>
-            ) : (
-              <select value={valores.rubro_id ?? ''}
-                onChange={e => onChange({ rubro_id: e.target.value })} className={selCls}>
-                <option value="">— Sin rubro —</option>
-                {rubrosFiltrados.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
-              </select>
-            )}
-          </Campo>
-          <Campo label="Fecha de pago">
-            <input type="date" value={valores.fecha_pago ?? ''}
-              onChange={e => onChange({ fecha_pago: e.target.value })} className={inCls} />
-          </Campo>
-          <Campo label="Período">
-            <select value={valores.periodo ?? ''}
-              onChange={e => onChange({ periodo: e.target.value })} className={selCls}>
-              {PERIODOS_FILTRO.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-            </select>
-          </Campo>
-          <Campo label="Monto bruto">
-            <input type="number" step="0.01" value={valores.monto_bruto ?? ''}
-              onChange={e => onChange({ monto_bruto: e.target.value })} className={inCls + ' text-right'} />
-          </Campo>
-          <Campo label="Estado">
-            <select value={valores.estado ?? 'proyectado'}
-              onChange={e => onChange({ estado: e.target.value })} className={selCls}>
-              <option value="proyectado">Proyectado</option>
-              <option value="ejecutado">Ejecutado</option>
-            </select>
-          </Campo>
-          <Campo label="Concepto">
-            <input type="text" value={valores.concepto ?? ''}
-              onChange={e => onChange({ concepto: e.target.value })} className={inCls} />
-          </Campo>
-        </div>
-
-        <div className="flex items-center gap-2 mt-3">
-          {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
-          <div className="flex items-center gap-2 ml-auto">
-            <button onClick={onCancelar} disabled={guardando}
-              className="text-xs font-medium text-slate-500 hover:text-slate-700
-                         px-3 py-2 transition-colors disabled:opacity-50">
-              Cancelar
-            </button>
-            <button onClick={onGuardar} disabled={guardando}
-              className="text-xs font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50
-                         text-white px-4 py-2 rounded-lg transition-colors">
-              {guardando ? 'Guardando…' : 'Guardar'}
-            </button>
-          </div>
+          )}
         </div>
       </td>
     </tr>
-  )
-}
-
-function Campo({ label, children }) {
-  return (
-    <div>
-      <label className="block text-[11px] font-semibold text-slate-500 mb-1">{label}</label>
-      {children}
-    </div>
   )
 }
 
@@ -771,8 +510,4 @@ function Th({ children, align = 'left' }) {
 
 const selCls = `w-full px-2.5 py-2 text-sm rounded-lg border border-slate-200
   text-slate-900 bg-white focus:outline-none focus:ring-2
-  focus:ring-blue-500 focus:border-transparent`
-
-const inCls = `w-full px-2.5 py-2 text-sm rounded-lg border border-slate-200
-  text-slate-900 placeholder:text-slate-300 bg-white focus:outline-none focus:ring-2
   focus:ring-blue-500 focus:border-transparent`

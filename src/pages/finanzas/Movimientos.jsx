@@ -178,13 +178,6 @@ export default function Movimientos() {
 
   useEffect(() => { cargarMovimientos() }, [cargarMovimientos])
 
-  async function handleEliminar(id) {
-    setErrorGlobal('')
-    const { error } = await supabase.from('movimientos').delete().eq('id', id)
-    if (error) { setErrorGlobal('No se pudo eliminar el movimiento.'); return }
-    await cargarMovimientos()
-  }
-
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
       <TopNav perfil={perfil} />
@@ -203,7 +196,9 @@ export default function Movimientos() {
               Panel de Finanzas
             </button>
             <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Movimientos</h1>
-            <p className="text-slate-400 text-sm mt-0.5">Ingresos y egresos proyectados y ejecutados</p>
+            <p className="text-slate-400 text-sm mt-0.5">
+              Cargá acá los movimientos nuevos. Para editar o borrar uno ya cargado, usá el botón "Editar" en el Cash Flow.
+            </p>
           </div>
 
           <button
@@ -258,11 +253,9 @@ export default function Movimientos() {
 
         {/* Tabla de movimientos */}
         <TablaMovimientos
-          movimientos={movimientos} obras={obras} rubros={rubros} cargando={cargando}
+          movimientos={movimientos} obras={obras} cargando={cargando}
           userId={user.id}
-          onEliminar={handleEliminar}
           onEjecutado={cargarMovimientos}
-          onEditado={cargarMovimientos}
           onNota={mov => setModalNotas(mov)}
         />
 

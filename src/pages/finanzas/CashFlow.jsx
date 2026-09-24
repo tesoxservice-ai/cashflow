@@ -224,7 +224,8 @@ export default function CashFlow() {
   const [rubros,      setRubros]      = useState([])
   const [movimientos, setMovimientos] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
-  const [cargando,    setCargando]    = useState(true)
+  const [cargando,     setCargando]     = useState(true)
+  const [actualizando, setActualizando] = useState(false)
   const [error,       setError]       = useState('')
 
   const [filtroCuenta, setFiltroCuenta] = useState('')
@@ -283,8 +284,10 @@ export default function CashFlow() {
 
   useEffect(() => { cargarSaldosBase() }, [cargarSaldosBase])
 
-  const cargarMovimientos = useCallback(async () => {
-    setCargando(true); setError('')
+  const cargarMovimientos = useCallback(async (opts = {}) => {
+    const { silencioso = false } = opts
+    if (silencioso) setActualizando(true); else setCargando(true)
+    setError('')
     const { data: movData, error: movErr } = await supabase
       .from('movimientos')
       .select(`
@@ -300,7 +303,7 @@ export default function CashFlow() {
       .order('created_at', { ascending: true })
       .order('id',         { ascending: true })
 
-    if (movErr) { setError('No se pudieron cargar los movimientos.'); setCargando(false); return }
+    if (movErr) { setError('No se pudieron cargar los movimientos.'); setCargando(false); setActualizando(false); return }
 
     const movIds = (movData ?? []).map(m => m.id)
     let notasPorMov = {}
@@ -328,6 +331,7 @@ export default function CashFlow() {
 
     setMovimientos(enriquecidos)
     setCargando(false)
+    setActualizando(false)
   }, [])
 
   useEffect(() => { cargarMovimientos() }, [cargarMovimientos])
@@ -447,7 +451,7 @@ export default function CashFlow() {
     if (delError) { setErrorEdicion('No se pudo borrar el movimiento.'); return }
     setFilaEditando(null)
     setValoresEdicion({})
-    await cargarMovimientos()
+    await cargarMovimientos({ silencioso: true })
   }
 
   async function handleGuardarEdicion(id) {
@@ -501,7 +505,7 @@ export default function CashFlow() {
 
     setFilaEditando(null)
     setValoresEdicion({})
-    await cargarMovimientos()
+    await cargarMovimientos({ silencioso: true })
   }
 
   function handleIniciarAjuste(m) {
@@ -561,7 +565,7 @@ export default function CashFlow() {
 
     setFilaAjustando(null)
     setValorAjuste('')
-    await cargarMovimientos()
+    await cargarMovimientos({ silencioso: true })
   }
 
   function handleIniciarProyeccion(m) {
@@ -599,7 +603,7 @@ export default function CashFlow() {
 
     setFilaProyeccion(null)
     setNuevaFechaProyeccion('')
-    await cargarMovimientos()
+    await cargarMovimientos({ silencioso: true })
   }
 
   const selCls = `w-full px-3 py-2 text-sm rounded-xl border border-slate-200
@@ -628,6 +632,15 @@ export default function CashFlow() {
             Posición financiera de la empresa — próximos {horizonte} días
           </p>
         </div>
+
+        {/* Indicador de refresco en segundo plano (no tapa la pantalla ni mueve el scroll) */}
+        {actualizando && (
+          <div className="fixed top-4 right-4 z-50 flex items-center gap-2 bg-white shadow-md
+                          border border-slate-100 rounded-full px-3 py-1.5 text-xs text-slate-500">
+            <span className="w-3.5 h-3.5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
+            Actualizando…
+          </div>
+        )}
 
         {/* Error global */}
         {error && (

@@ -720,7 +720,8 @@ function TabCashFlow() {
   const [cuentas,     setCuentas]     = useState([])
   const [movimientos, setMovimientos] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
-  const [cargando,    setCargando]    = useState(true)
+  const [cargando,     setCargando]     = useState(true)
+  const [actualizando, setActualizando] = useState(false)
   const [error,       setError]       = useState('')
 
   const [filtroCuenta,    setFiltroCuenta]    = useState('')
@@ -749,8 +750,10 @@ function TabCashFlow() {
       })
   }, [])
 
-  const cargarMovimientos = useCallback(async () => {
-    setCargando(true); setError('')
+  const cargarMovimientos = useCallback(async (opts = {}) => {
+    const { silencioso = false } = opts
+    if (silencioso) setActualizando(true); else setCargando(true)
+    setError('')
     const { data: movData, error: movErr } = await supabase
       .from('movimientos')
       .select(`
@@ -765,7 +768,7 @@ function TabCashFlow() {
       .order('created_at', { ascending: true })
       .order('id',         { ascending: true })
 
-    if (movErr) { setError('No se pudieron cargar los movimientos.'); setCargando(false); return }
+    if (movErr) { setError('No se pudieron cargar los movimientos.'); setCargando(false); setActualizando(false); return }
 
     const movIds = (movData ?? []).map(m => m.id)
     let notasPorMov = {}
@@ -791,6 +794,7 @@ function TabCashFlow() {
 
     setMovimientos(enriquecidos)
     setCargando(false)
+    setActualizando(false)
   }, [])
 
   useEffect(() => { cargarMovimientos() }, [cargarMovimientos])
@@ -828,7 +832,7 @@ function TabCashFlow() {
 
     setFilaProyeccion(null)
     setNuevaFechaProyeccion('')
-    await cargarMovimientos()
+    await cargarMovimientos({ silencioso: true })
   }
 
   const { movimientosConSaldo } = useMemo(() => {
@@ -922,6 +926,13 @@ function TabCashFlow() {
 
   return (
     <div className="space-y-6">
+      {actualizando && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 bg-white shadow-md
+                        border border-slate-100 rounded-full px-3 py-1.5 text-xs text-slate-500">
+          <span className="w-3.5 h-3.5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
+          Actualizando…
+        </div>
+      )}
       {cargando ? (
         <div className="flex items-center justify-center py-16 gap-3 text-slate-400">
           <span className="w-5 h-5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
