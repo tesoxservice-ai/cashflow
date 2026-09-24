@@ -51,7 +51,7 @@ const BADGE_CAT = {
 }
 const LABEL_CAT = {
   factura:           'Factura',
-  ingreso_cliente:   'Ingreso cliente',
+  ingreso_cliente:   'Ventas',
   sueldo:            'Sueldo',
   impuesto:          'Impuesto',
   debito_automatico: 'Débito aut.',
@@ -73,7 +73,7 @@ const CATEGORIA_TIPO = {
 const CATEGORIAS_FILTRO = [
   { value: '',                  label: 'Todas las categorías' },
   { value: 'factura',           label: 'Factura' },
-  { value: 'ingreso_cliente',   label: 'Ingreso cliente' },
+  { value: 'ingreso_cliente',   label: 'Ventas' },
   { value: 'sueldo',            label: 'Sueldo' },
   { value: 'impuesto',          label: 'Impuesto' },
   { value: 'debito_automatico', label: 'Débito automático' },
@@ -228,12 +228,19 @@ export default function TablaMovimientos({
       setErrorEdicion('El monto tiene que ser un número mayor a 0.'); return
     }
 
+    // El rubro de una Venta siempre es "Ventas" -- se asigna solo, no se elige.
+    let rubroId = valoresEdicion.rubro_id || null
+    if (valoresEdicion.categoria === 'ingreso_cliente') {
+      const rubroVentas = (rubros ?? []).find(r => r.nombre === 'Ventas' && r.tipo === (valoresEdicion.obra_id ? 'obra' : 'general'))
+      rubroId = rubroVentas?.id ?? null
+    }
+
     const payload = {
       proveedor_cliente: valoresEdicion.proveedor_cliente.trim() || null,
       numero_factura:    valoresEdicion.numero_factura.trim()    || null,
       categoria:         valoresEdicion.categoria,
       obra_id:           valoresEdicion.obra_id  || null,
-      rubro_id:          valoresEdicion.rubro_id || null,
+      rubro_id:          rubroId,
       fecha_pago:        valoresEdicion.fecha_pago,
       periodo:           valoresEdicion.periodo,
       monto_bruto:       monto,
@@ -600,11 +607,15 @@ function FilaEdicionMovimiento({ mov, valores, obras, rubros, guardando, error, 
             </select>
           </Campo>
           <Campo label="Rubro">
-            <select value={valores.rubro_id ?? ''}
-              onChange={e => onChange({ rubro_id: e.target.value })} className={selCls}>
-              <option value="">— Sin rubro —</option>
-              {rubrosFiltrados.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
-            </select>
+            {valores.categoria === 'ingreso_cliente' ? (
+              <p className="text-sm text-slate-500 px-3 py-2">Ventas (automático)</p>
+            ) : (
+              <select value={valores.rubro_id ?? ''}
+                onChange={e => onChange({ rubro_id: e.target.value })} className={selCls}>
+                <option value="">— Sin rubro —</option>
+                {rubrosFiltrados.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+              </select>
+            )}
           </Campo>
           <Campo label="Fecha de pago">
             <input type="date" value={valores.fecha_pago ?? ''}

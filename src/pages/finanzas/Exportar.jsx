@@ -109,7 +109,7 @@ async function cargarDatos(periodo) {
     { data: movPeriodo, error: e8 },
   ] = await Promise.all([
     supabase.from('movimientos')
-      .select('id,tipo,categoria,proveedor_cliente,numero_factura,forma_pago,numero_op,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,cuenta_id,concepto,observaciones,created_at')
+      .select('id,tipo,categoria,proveedor_cliente,numero_factura,forma_pago,numero_op,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,cuenta_id,concepto,observaciones,created_at,estado_proyeccion,fecha_pago_original')
       .order('fecha_pago', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true }),
     supabase.from('saldos_iniciales')
@@ -158,12 +158,15 @@ async function cargarDatos(periodo) {
   const sumaSaldosBase = Object.values(saldosPorCuenta).reduce((acc,s) => acc + Number(s.monto ?? 0), 0)
   let saldo = sumaSaldosBase
   const movConSaldo = movEnriq.map(m => {
-    saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
+    if (m.estado_proyeccion !== 'no_cumple') {
+      saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
+    }
     return { ...m, saldoAcumulado: saldo }
   })
 
   let saldoDisponible = sumaSaldosBase, ingresosProyect = 0, egresosProyect = 0
   movEnriq.forEach(m => {
+    if (m.estado_proyeccion === 'no_cumple') return
     const fecha = m.fecha_pago ?? m.periodo
     if (m.estado === 'ejecutado' && (!fecha || fecha <= hoy)) {
       saldoDisponible += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo

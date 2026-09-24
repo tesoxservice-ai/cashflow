@@ -134,6 +134,7 @@ export default function VentasProyectadasFinanzas() {
 
   const [obras,         setObras]         = useState([])
   const [cuentas,       setCuentas]       = useState([])
+  const [rubros,        setRubros]        = useState([])
   const [obraFiltro,    setObraFiltro]    = useState('')
   const [periodoFiltro, setPeriodoFiltro] = useState('todos')
   const [estadoFiltro,  setEstadoFiltro]  = useState('pendiente')
@@ -148,12 +149,14 @@ export default function VentasProyectadasFinanzas() {
 
   useEffect(() => {
     async function cargarMaestros() {
-      const [{ data: dataObras }, { data: dataCuentas }] = await Promise.all([
+      const [{ data: dataObras }, { data: dataCuentas }, { data: dataRubros }] = await Promise.all([
         supabase.from('obras').select('id, codigo, nombre, cliente').eq('activa', true).order('codigo'),
         supabase.from('cuentas').select('id, nombre, tipo').eq('activa', true).order('nombre'),
+        supabase.from('rubros').select('id, nombre, tipo').eq('activo', true),
       ])
       setObras(dataObras   ?? [])
       setCuentas(dataCuentas ?? [])
+      setRubros(dataRubros ?? [])
     }
     cargarMaestros()
   }, [])
@@ -191,6 +194,9 @@ export default function VentasProyectadasFinanzas() {
     if (!formRegistro.fecha_pago) { setErrorModal('Ingresá la fecha de cobro.'); return }
     if (!formRegistro.monto_neto || Number(formRegistro.monto_neto) <= 0) { setErrorModal('Ingresá un monto válido.'); return }
 
+    // El rubro de una Venta siempre es "Ventas" -- se asigna solo, no se elige.
+    const rubroVentas = rubros.find(r => r.nombre === 'Ventas' && r.tipo === (modalVenta.obra_id ? 'obra' : 'general'))
+
     setRegistrando(true)
     const { data: movData, error: movError } = await supabase
       .from('movimientos')
@@ -198,7 +204,7 @@ export default function VentasProyectadasFinanzas() {
         tipo: 'ingreso', categoria: 'ingreso_cliente',
         proveedor_cliente: modalVenta.obras?.nombre ?? '',
         monto_bruto: modalVenta.monto, monto_neto: Number(formRegistro.monto_neto),
-        obra_id: modalVenta.obra_id, periodo: modalVenta.periodo,
+        obra_id: modalVenta.obra_id, rubro_id: rubroVentas?.id ?? null, periodo: modalVenta.periodo,
         forma_pago: 'transferencia', fecha_pago: formRegistro.fecha_pago,
         cuenta_id: formRegistro.cuenta_id, estado: 'ejecutado',
         concepto: labelRubro(modalVenta.rubro),

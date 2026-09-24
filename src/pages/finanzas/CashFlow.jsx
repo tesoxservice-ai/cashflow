@@ -54,7 +54,7 @@ const BADGE_CAT = {
 }
 const LABEL_CAT = {
   factura:           'Factura',
-  ingreso_cliente:   'Ingreso cliente',
+  ingreso_cliente:   'Ventas',
   sueldo:            'Sueldo',
   impuesto:          'Impuesto',
   debito_automatico: 'Débito aut.',
@@ -193,6 +193,11 @@ export default function CashFlow() {
   const [guardandoAjuste, setGuardandoAjuste] = useState(false)
   const [errorAjuste,     setErrorAjuste]     = useState('')
 
+  const [filaProyeccion,     setFilaProyeccion]     = useState(null)
+  const [nuevaFechaProyeccion, setNuevaFechaProyeccion] = useState('')
+  const [guardandoProyeccion, setGuardandoProyeccion] = useState(false)
+  const [errorProyeccion,     setErrorProyeccion]     = useState('')
+
   useEffect(() => {
     supabase
       .from('cuentas')
@@ -223,6 +228,7 @@ export default function CashFlow() {
         id, tipo, categoria, proveedor_cliente, numero_factura,
         monto_bruto, monto_neto, concepto,
         periodo, fecha_pago, estado, cuenta_id, created_at,
+        estado_proyeccion, fecha_pago_original,
         obras   ( id, codigo, nombre ),
         rubros  ( id, nombre ),
         cuentas ( id, nombre )
@@ -267,8 +273,12 @@ export default function CashFlow() {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
     let saldoActual = sumaSaldosBase
     const resultado = movimientos.map(m => {
-      if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
-      else                      saldoActual -= m.montoEfectivo
+      // "No se cumple": el movimiento queda registrado pero no suma/resta
+      // en el saldo acumulado (no se borra ni se pierde el dato).
+      if (m.estado_proyeccion !== 'no_cumple') {
+        if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
+        else                      saldoActual -= m.montoEfectivo
+      }
       return { ...m, saldoAcumulado: saldoActual }
     })
     return { movimientosConSaldo: resultado, saldoInicial: sumaSaldosBase }
@@ -285,6 +295,7 @@ export default function CashFlow() {
     movimientos.forEach(m => {
       const fecha = m.fecha_pago ?? m.periodo
       if (!fecha || fecha > hoy) return
+      if (m.estado_proyeccion === 'no_cumple') return
       if (m.tipo === 'ingreso') saldoHoy += m.montoEfectivo
       else                      saldoHoy -= m.montoEfectivo
     })
@@ -451,6 +462,44 @@ export default function CashFlow() {
 
     setFilaAjustando(null)
     setValorAjuste('')
+    await cargarMovimientos()
+  }
+
+  function handleIniciarProyeccion(m) {
+    setFilaProyeccion(m.id)
+    setNuevaFechaProyeccion(m.fecha_pago ?? '')
+    setErrorProyeccion('')
+  }
+
+  function handleCancelarProyeccion() {
+    setFilaProyeccion(null)
+    setNuevaFechaProyeccion('')
+    setErrorProyeccion('')
+  }
+
+  async function handleGuardarProyeccion(m, accion) {
+    setErrorProyeccion('')
+
+    const payload = { estado_proyeccion: accion }
+
+    if (accion === 'reprogramado') {
+      if (!nuevaFechaProyeccion) { setErrorProyeccion('Elegí la nueva fecha estimada.'); return }
+      if (nuevaFechaProyeccion === m.fecha_pago) { setErrorProyeccion('La fecha nueva tiene que ser distinta a la actual.'); return }
+      // Guarda la fecha original solo la primera vez, para no perder el
+      // historial si se reprograma más de una vez.
+      payload.fecha_pago_original = m.fecha_pago_original ?? m.fecha_pago
+      payload.fecha_pago = nuevaFechaProyeccion
+      payload.periodo = periodoDeStr(nuevaFechaProyeccion)
+    }
+
+    setGuardandoProyeccion(true)
+    const { error: updError } = await supabase.from('movimientos').update(payload).eq('id', m.id)
+    setGuardandoProyeccion(false)
+
+    if (updError) { setErrorProyeccion('No se pudo guardar el cambio.'); return }
+
+    setFilaProyeccion(null)
+    setNuevaFechaProyeccion('')
     await cargarMovimientos()
   }
 
@@ -666,6 +715,14 @@ export default function CashFlow() {
               onCambiarAjuste={setValorAjuste}
               onGuardarAjuste={handleGuardarAjuste}
               onCancelarAjuste={handleCancelarAjuste}
+              filaProyeccion={filaProyeccion}
+              nuevaFechaProyeccion={nuevaFechaProyeccion}
+              guardandoProyeccion={guardandoProyeccion}
+              errorProyeccion={errorProyeccion}
+              onIniciarProyeccion={handleIniciarProyeccion}
+              onCambiarNuevaFecha={setNuevaFechaProyeccion}
+              onGuardarProyeccion={handleGuardarProyeccion}
+              onCancelarProyeccion={handleCancelarProyeccion}
             />
 
             {/* Pie de totales */}
@@ -701,6 +758,8 @@ function TablaCashFlow({
   onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion, onBorrarEdicion,
   filaAjustando, valorAjuste, guardandoAjuste, errorAjuste,
   onIniciarAjuste, onCambiarAjuste, onGuardarAjuste, onCancelarAjuste,
+  filaProyeccion, nuevaFechaProyeccion, guardandoProyeccion, errorProyeccion,
+  onIniciarProyeccion, onCambiarNuevaFecha, onGuardarProyeccion, onCancelarProyeccion,
 }) {
   const filasRender = useMemo(() => {
     const resultado   = []
@@ -777,6 +836,21 @@ function TablaCashFlow({
                 )
               }
 
+              if (filaProyeccion === m.id) {
+                return (
+                  <FilaProyeccion
+                    key={fila.key}
+                    mov={m}
+                    nuevaFecha={nuevaFechaProyeccion}
+                    guardando={guardandoProyeccion}
+                    error={errorProyeccion}
+                    onChangeFecha={onCambiarNuevaFecha}
+                    onGuardar={accion => onGuardarProyeccion(m, accion)}
+                    onCancelar={onCancelarProyeccion}
+                  />
+                )
+              }
+
               return (
                 <tr key={fila.key}
                   className={`border-b border-slate-100 last:border-0 transition-colors
@@ -791,6 +865,17 @@ function TablaCashFlow({
                         : 'bg-slate-100 text-slate-500'}`}>
                       {m.estado === 'ejecutado' ? 'Ejecutado' : 'Proyectado'}
                     </span>
+                    {m.estado_proyeccion === 'no_cumple' && (
+                      <span className="block text-slate-400 text-[10px] font-semibold mt-1" title="No suma en el saldo acumulado">
+                        No se cumple
+                      </span>
+                    )}
+                    {m.estado_proyeccion === 'reprogramado' && (
+                      <span className="block text-blue-500 text-[10px] font-semibold mt-1"
+                        title={`Fecha original: ${fmtFecha(m.fecha_pago_original)}`}>
+                        Reprogramado
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full
@@ -811,12 +896,12 @@ function TablaCashFlow({
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
                     {m.tipo === 'ingreso'
-                      ? <span className="text-emerald-600 font-semibold">{fmtARS(m.montoEfectivo)}</span>
+                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : 'text-emerald-600 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
                       : <span className="text-slate-200 text-xs">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
                     {m.tipo === 'egreso'
-                      ? <span className="text-red-500 font-semibold">{fmtARS(m.montoEfectivo)}</span>
+                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : 'text-red-500 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
                       : <span className="text-slate-200 text-xs">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
@@ -833,7 +918,7 @@ function TablaCashFlow({
                     <div className="flex items-center justify-end gap-3">
                       <button
                         onClick={() => onIniciarEdicion(m)}
-                        disabled={filaEditando !== null || filaAjustando !== null}
+                        disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
                         className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                         style={{ color: '#0e7490' }}
                       >
@@ -841,10 +926,17 @@ function TablaCashFlow({
                       </button>
                       <button
                         onClick={() => onIniciarAjuste(m)}
-                        disabled={filaEditando !== null || filaAjustando !== null}
+                        disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
                         className="text-xs font-semibold text-amber-600 hover:text-amber-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                       >
                         Ajustar saldo
+                      </button>
+                      <button
+                        onClick={() => onIniciarProyeccion(m)}
+                        disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
+                        className="text-xs font-semibold text-violet-600 hover:text-violet-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        Proyección
                       </button>
                     </div>
                   </td>
@@ -938,6 +1030,90 @@ function FilaAjusteSaldo({ mov, valor, guardando, error, onChange, onGuardar, on
           Esto crea un movimiento nuevo de ajuste el día anterior a esta fila, para que esta fila y todo lo que
           sigue queden corregidos en cascada. El movimiento de ajuste queda visible y se puede editar o borrar
           como cualquier otro.
+        </p>
+      </td>
+    </tr>
+  )
+}
+
+function FilaProyeccion({ mov, nuevaFecha, guardando, error, onChangeFecha, onGuardar, onCancelar }) {
+  const [modo, setModo] = useState(mov.estado_proyeccion === 'normal' ? '' : mov.estado_proyeccion)
+
+  return (
+    <tr style={{ backgroundColor: '#f5f3ff' }} className="border-b border-violet-100">
+      <td className="px-4 py-3" colSpan={9}>
+        <div className="flex flex-wrap items-start gap-4">
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">
+              {mov.proveedor_cliente ?? mov.concepto ?? 'Movimiento'} — {fmtARS(mov.montoEfectivo)}
+            </p>
+            <p className="text-xs text-slate-400">
+              Fecha actual: {fmtFecha(mov.fecha_pago)}
+              {mov.fecha_pago_original && ` (original: ${fmtFecha(mov.fecha_pago_original)})`}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setModo('normal')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors
+                ${modo === 'normal' ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+            >
+              Mantener proyección
+            </button>
+            <button
+              onClick={() => setModo('no_cumple')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors
+                ${modo === 'no_cumple' ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+            >
+              No se cumple
+            </button>
+            <button
+              onClick={() => setModo('reprogramado')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors
+                ${modo === 'reprogramado' ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+            >
+              Reprogramar
+            </button>
+          </div>
+
+          {modo === 'reprogramado' && (
+            <div>
+              <label className="block text-[11px] font-semibold text-violet-700 mb-1">Nueva fecha estimada</label>
+              <input
+                type="date"
+                value={nuevaFecha}
+                onChange={e => onChangeFecha(e.target.value)}
+                className="px-3 py-2 text-sm rounded-xl border border-violet-200 text-slate-900 bg-white
+                          focus:outline-none focus:ring-2 focus:border-transparent"
+                autoFocus
+              />
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 ml-auto">
+            {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
+            <button
+              onClick={onCancelar}
+              disabled={guardando}
+              className="px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-700
+                        transition-colors disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => onGuardar(modo || 'normal')}
+              disabled={guardando || !modo}
+              className="px-4 py-2 text-sm font-semibold text-white rounded-xl transition-colors
+                        disabled:opacity-50 disabled:cursor-not-allowed bg-violet-600 hover:bg-violet-700"
+            >
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          "No se cumple" deja el movimiento visible como pendiente pero no lo suma ni resta del saldo acumulado.
+          "Reprogramar" mueve la fecha de pago y guarda la fecha original para no perder el historial. Nada se borra.
         </p>
       </td>
     </tr>

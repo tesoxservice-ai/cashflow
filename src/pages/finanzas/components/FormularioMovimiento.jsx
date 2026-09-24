@@ -22,7 +22,7 @@ import { supabase } from '../../../supabaseClient'
 // que generan (ingreso / egreso)
 const CATEGORIAS = [
   { value: 'factura',           label: 'Factura a pagar',          tipo: 'egreso'  },
-  { value: 'ingreso_cliente',   label: 'Ingreso de cliente',        tipo: 'ingreso' },
+  { value: 'ingreso_cliente',   label: 'Ventas',                    tipo: 'ingreso' },
   { value: 'sueldo',            label: 'Sueldo',                    tipo: 'egreso'  },
   { value: 'impuesto',          label: 'Impuesto / Comisión bancaria', tipo: 'egreso' },
   { value: 'debito_automatico', label: 'Débito automático',         tipo: 'egreso'  },
@@ -208,6 +208,13 @@ export default function FormularioMovimiento({
       tipo = form.fima_subtipo === 'rescate' ? 'ingreso' : 'egreso'
     }
 
+    // El rubro de una Venta siempre es "Ventas" -- se asigna solo, no se elige.
+    let rubroId = form.rubro_id || null
+    if (form.categoria === 'ingreso_cliente') {
+      const rubroVentas = rubros.find(r => r.nombre === 'Ventas' && r.tipo === (form.obra_id ? 'obra' : 'general'))
+      rubroId = rubroVentas?.id ?? null
+    }
+
     // Construimos el payload limpio (solo campos relevantes)
     const payload = {
       tipo,
@@ -222,7 +229,7 @@ export default function FormularioMovimiento({
       numero_factura:    form.numero_factura.trim()     || null,
       fecha_factura:     form.fecha_factura             || null,
       obra_id:           form.obra_id                   || null,
-      rubro_id:          form.rubro_id                  || null,
+      rubro_id:          rubroId,
       concepto:          form.concepto.trim()           || null,
       forma_pago:        form.forma_pago                || null,
       numero_op:         form.numero_op.trim()          || null,

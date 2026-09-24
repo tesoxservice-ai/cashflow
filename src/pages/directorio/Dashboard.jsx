@@ -70,7 +70,7 @@ const BADGE_CAT = {
 }
 const LABEL_CAT = {
   factura:           'Factura',
-  ingreso_cliente:   'Ingreso cliente',
+  ingreso_cliente:   'Ventas',
   sueldo:            'Sueldo',
   impuesto:          'Impuesto',
   debito_automatico: 'Débito aut.',
@@ -80,7 +80,7 @@ const LABEL_CAT = {
 const CATEGORIAS_FILTRO = [
   { value: '',                  label: 'Todas' },
   { value: 'factura',           label: 'Factura' },
-  { value: 'ingreso_cliente',   label: 'Ingreso cliente' },
+  { value: 'ingreso_cliente',   label: 'Ventas' },
   { value: 'sueldo',            label: 'Sueldo' },
   { value: 'impuesto',          label: 'Impuesto' },
   { value: 'debito_automatico', label: 'Débito automático' },
@@ -121,7 +121,7 @@ async function cargarDatosExportDirectorio() {
     { data: movPeriodo, error: e7 },
   ] = await Promise.all([
     supabase.from('movimientos')
-      .select('id,tipo,categoria,proveedor_cliente,numero_factura,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,concepto')
+      .select('id,tipo,categoria,proveedor_cliente,numero_factura,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,concepto,estado_proyeccion')
       .order('fecha_pago', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true })
       .order('id', { ascending: true }),
@@ -167,7 +167,9 @@ async function cargarDatosExportDirectorio() {
 
   let saldo = sumaSaldosBase
   const movConSaldo = movEnriq.map(m => {
-    saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
+    if (m.estado_proyeccion !== 'no_cumple') {
+      saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
+    }
     return { ...m, saldoAcumulado: saldo }
   })
 
@@ -175,6 +177,7 @@ async function cargarDatosExportDirectorio() {
   movEnriq.forEach(m => {
     const fecha = m.fecha_pago ?? m.periodo
     if (!fecha || fecha > hoy) return
+    if (m.estado_proyeccion === 'no_cumple') return
     saldoHoy += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
   })
 
@@ -748,6 +751,7 @@ function TabCashFlow() {
         id, tipo, categoria, proveedor_cliente, numero_factura,
         monto_bruto, monto_neto, concepto,
         periodo, fecha_pago, estado, cuenta_id, created_at,
+        estado_proyeccion,
         obras   ( id, codigo, nombre ),
         cuentas ( id, nombre )
       `)
@@ -789,8 +793,10 @@ function TabCashFlow() {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
     let saldoActual = sumaSaldosBase
     const resultado = movimientos.map(m => {
-      if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
-      else                      saldoActual -= m.montoEfectivo
+      if (m.estado_proyeccion !== 'no_cumple') {
+        if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
+        else                      saldoActual -= m.montoEfectivo
+      }
       return { ...m, saldoAcumulado: saldoActual }
     })
     return { movimientosConSaldo: resultado }
@@ -807,6 +813,7 @@ function TabCashFlow() {
     movimientos.forEach(m => {
       const fecha = m.fecha_pago ?? m.periodo
       if (!fecha || fecha > hoy) return
+      if (m.estado_proyeccion === 'no_cumple') return
       if (m.tipo === 'ingreso') saldoHoy += m.montoEfectivo
       else                      saldoHoy -= m.montoEfectivo
     })
