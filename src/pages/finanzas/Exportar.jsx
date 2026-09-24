@@ -74,11 +74,12 @@ const ahora = () => new Date().toLocaleDateString('es-AR', {
   day:'2-digit', month:'long', year:'numeric', hour:'2-digit', minute:'2-digit',
 })
 
+// Desde diciembre de 2024 (fijo) hasta 24 meses después de hoy
 function generarPeriodos() {
   const lista = []
   const hoy   = new Date()
-  for (let i = -24; i <= 12; i++) {
-    const d     = new Date(hoy.getFullYear(), hoy.getMonth() + i, 1)
+  const fin   = new Date(hoy.getFullYear(), hoy.getMonth() + 24, 1)
+  for (let d = new Date(2024, 11, 1); d <= fin; d.setMonth(d.getMonth() + 1)) {
     const value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`
     const label = d.toLocaleDateString('es-AR', { month:'long', year:'numeric' })
     lista.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) })

@@ -36,12 +36,26 @@ const FORMAS_PAGO = [
   { value: 'debito_automatico', label: 'Débito automático' },
 ]
 
-// Genera los próximos 24 meses desde el mes actual
+// Mismos rubros que ve Operaciones al cargar presupuestos, más "Ventas"
+// (que se usa para la categoría Ventas / ingreso_cliente).
+const RUBROS_PERMITIDOS_FINANZAS = [
+  'Materiales',
+  'Subcontratos',
+  'MO directa con Carg Sociales',
+  'Mano de obra indirecta con cargas',
+  'Vehículos',
+  'Otros Gastos Operativos',
+  'Gastos Generales',
+  'Impuestos',
+  'Ventas',
+]
+
+// Desde diciembre de 2024 (fijo) hasta 24 meses después de hoy
 function generarPeriodos() {
   const periodos = []
   const hoy = new Date()
-  for (let i = 0; i < 24; i++) {
-    const d = new Date(hoy.getFullYear(), hoy.getMonth() + i, 1)
+  const fin = new Date(hoy.getFullYear(), hoy.getMonth() + 24, 1)
+  for (let d = new Date(2024, 11, 1); d <= fin; d.setMonth(d.getMonth() + 1)) {
     const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
     const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })
     periodos.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) })
@@ -124,7 +138,8 @@ export default function FormularioMovimiento({
   // Si hay obra → mostrar rubros tipo 'obra'
   // Si no hay obra → mostrar rubros tipo 'general'
   const rubrosFiltrados = rubros.filter(r =>
-    r.activo && (form.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
+    r.activo && RUBROS_PERMITIDOS_FINANZAS.includes(r.nombre)
+    && (form.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
   )
 
   // ── Cuentas de tipo fondo_inversion (para FIMA) ───────────────

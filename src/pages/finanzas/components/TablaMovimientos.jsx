@@ -25,12 +25,12 @@ function fmtFecha(str) {
   return new Date(str + 'T00:00:00').toLocaleDateString('es-AR')
 }
 
-// Genera los próximos 24 meses + 12 anteriores para el filtro de período
+// Desde diciembre de 2024 (fijo) hasta 24 meses después de hoy
 function generarPeriodos() {
   const lista = []
   const hoy = new Date()
-  for (let i = -12; i < 24; i++) {
-    const d = new Date(hoy.getFullYear(), hoy.getMonth() + i, 1)
+  const fin = new Date(hoy.getFullYear(), hoy.getMonth() + 24, 1)
+  for (let d = new Date(2024, 11, 1); d <= fin; d.setMonth(d.getMonth() + 1)) {
     const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
     const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })
     lista.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) })
@@ -69,6 +69,20 @@ const CATEGORIA_TIPO = {
   debito_automatico: 'egreso',
   otro:              'egreso',
 }
+
+// Mismos rubros que ve Operaciones al cargar presupuestos, más "Ventas"
+// (que se usa para la categoría Ventas / ingreso_cliente).
+const RUBROS_PERMITIDOS_FINANZAS = [
+  'Materiales',
+  'Subcontratos',
+  'MO directa con Carg Sociales',
+  'Mano de obra indirecta con cargas',
+  'Vehículos',
+  'Otros Gastos Operativos',
+  'Gastos Generales',
+  'Impuestos',
+  'Ventas',
+]
 
 const CATEGORIAS_FILTRO = [
   { value: '',                  label: 'Todas las categorías' },
@@ -575,7 +589,8 @@ function FilaMovimiento({ mov: m, ejecutandoEsta, confirmarElim, deshabilitada, 
 // ══════════════════════════════════════════════════════════════
 function FilaEdicionMovimiento({ mov, valores, obras, rubros, guardando, error, onChange, onGuardar, onCancelar }) {
   const rubrosFiltrados = (rubros ?? []).filter(r =>
-    r.activo && (valores.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
+    r.activo && RUBROS_PERMITIDOS_FINANZAS.includes(r.nombre)
+    && (valores.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
   )
 
   return (

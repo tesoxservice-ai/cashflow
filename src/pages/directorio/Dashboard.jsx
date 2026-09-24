@@ -46,11 +46,12 @@ function labelPeriodo(fechaStr) {
   return label.charAt(0).toUpperCase() + label.slice(1)
 }
 
+// Desde diciembre de 2024 (fijo) hasta 24 meses después de hoy
 function generarPeriodos() {
   const lista = []
   const hoy = new Date()
-  for (let i = -6; i <= 12; i++) {
-    const d = new Date(hoy.getFullYear(), hoy.getMonth() + i, 1)
+  const fin = new Date(hoy.getFullYear(), hoy.getMonth() + 24, 1)
+  for (let d = new Date(2024, 11, 1); d <= fin; d.setMonth(d.getMonth() + 1)) {
     const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
     const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })
     lista.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) })
@@ -728,6 +729,11 @@ function TabCashFlow() {
   const [horizonte,       setHorizonte]       = useState(90)
   const [mostrarDetalle,  setMostrarDetalle]  = useState(false)
 
+  const [filaProyeccion,       setFilaProyeccion]       = useState(null)
+  const [nuevaFechaProyeccion, setNuevaFechaProyeccion] = useState('')
+  const [guardandoProyeccion,  setGuardandoProyeccion]  = useState(false)
+  const [errorProyeccion,      setErrorProyeccion]      = useState('')
+
   useEffect(() => {
     supabase.from('cuentas').select('id, nombre, tipo, activa').eq('activa', true).order('nombre')
       .then(({ data }) => setCuentas(data ?? []))
@@ -751,7 +757,7 @@ function TabCashFlow() {
         id, tipo, categoria, proveedor_cliente, numero_factura,
         monto_bruto, monto_neto, concepto,
         periodo, fecha_pago, estado, cuenta_id, created_at,
-        estado_proyeccion,
+        estado_proyeccion, fecha_pago_original,
         obras   ( id, codigo, nombre ),
         cuentas ( id, nombre )
       `)
@@ -788,6 +794,42 @@ function TabCashFlow() {
   }, [])
 
   useEffect(() => { cargarMovimientos() }, [cargarMovimientos])
+
+  function handleIniciarProyeccion(m) {
+    setFilaProyeccion(m.id)
+    setNuevaFechaProyeccion(m.fecha_pago ?? '')
+    setErrorProyeccion('')
+  }
+
+  function handleCancelarProyeccion() {
+    setFilaProyeccion(null)
+    setNuevaFechaProyeccion('')
+    setErrorProyeccion('')
+  }
+
+  async function handleGuardarProyeccion(m, accion) {
+    setErrorProyeccion('')
+
+    const payload = { estado_proyeccion: accion }
+
+    if (accion === 'reprogramado') {
+      if (!nuevaFechaProyeccion) { setErrorProyeccion('Elegí la nueva fecha estimada.'); return }
+      if (nuevaFechaProyeccion === m.fecha_pago) { setErrorProyeccion('La fecha nueva tiene que ser distinta a la actual.'); return }
+      payload.fecha_pago_original = m.fecha_pago_original ?? m.fecha_pago
+      payload.fecha_pago = nuevaFechaProyeccion
+      payload.periodo = periodoDeStr(nuevaFechaProyeccion)
+    }
+
+    setGuardandoProyeccion(true)
+    const { error: updError } = await supabase.from('movimientos').update(payload).eq('id', m.id)
+    setGuardandoProyeccion(false)
+
+    if (updError) { setErrorProyeccion('No se pudo guardar el cambio.'); return }
+
+    setFilaProyeccion(null)
+    setNuevaFechaProyeccion('')
+    await cargarMovimientos()
+  }
 
   const { movimientosConSaldo } = useMemo(() => {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
@@ -989,11 +1031,28 @@ function TabCashFlow() {
                   <Th align="right">Ingreso</Th>
                   <Th align="right">Egreso</Th>
                   <Th align="right">Saldo acumulado</Th>
+                  <Th align="right">Acciones</Th>
                 </tr>
               </thead>
               <tbody>
                 {filasFiltradas.map(m => {
                   const esIngreso = m.tipo === 'ingreso'
+
+                  if (filaProyeccion === m.id) {
+                    return (
+                      <FilaProyeccionDirectorio
+                        key={m.id}
+                        mov={m}
+                        nuevaFecha={nuevaFechaProyeccion}
+                        guardando={guardandoProyeccion}
+                        error={errorProyeccion}
+                        onChangeFecha={setNuevaFechaProyeccion}
+                        onGuardar={accion => handleGuardarProyeccion(m, accion)}
+                        onCancelar={handleCancelarProyeccion}
+                      />
+                    )
+                  }
+
                   return (
                     <tr key={m.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 transition-colors">
                       <td className="px-4 py-3 text-slate-600 whitespace-nowrap text-xs">{fmtFecha(m.fecha_pago)}</td>
@@ -1001,6 +1060,17 @@ function TabCashFlow() {
                         <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${BADGE_CAT[m.categoria] ?? 'bg-slate-100 text-slate-600'}`}>
                           {LABEL_CAT[m.categoria] ?? m.categoria}
                         </span>
+                        {m.estado_proyeccion === 'no_cumple' && (
+                          <span className="block text-slate-400 text-[10px] font-semibold mt-1" title="No suma en el saldo acumulado">
+                            No se cumple
+                          </span>
+                        )}
+                        {m.estado_proyeccion === 'reprogramado' && (
+                          <span className="block text-blue-500 text-[10px] font-semibold mt-1"
+                            title={`Fecha original: ${fmtFecha(m.fecha_pago_original)}`}>
+                            Reprogramado
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-700 max-w-[200px] truncate">
                         {m.proveedor_cliente ?? m.concepto ?? '—'}
@@ -1008,13 +1078,22 @@ function TabCashFlow() {
                       </td>
                       <td className="px-4 py-3 text-slate-600 text-xs whitespace-nowrap">{m.obras?.codigo ?? '—'}</td>
                       <td className="px-4 py-3 text-right tabular-nums text-emerald-600 whitespace-nowrap">
-                        {esIngreso ? fmtARS(m.montoEfectivo) : '—'}
+                        {esIngreso ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 line-through' : ''}>{fmtARS(m.montoEfectivo)}</span> : '—'}
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums text-red-600 whitespace-nowrap">
-                        {!esIngreso ? fmtARS(m.montoEfectivo) : '—'}
+                        {!esIngreso ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 line-through' : ''}>{fmtARS(m.montoEfectivo)}</span> : '—'}
                       </td>
                       <td className={`px-4 py-3 text-right tabular-nums font-semibold whitespace-nowrap ${m.saldoAcumulado >= 0 ? 'text-slate-800' : 'text-red-600'}`}>
                         {fmtARS(m.saldoAcumulado)}
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <button
+                          onClick={() => handleIniciarProyeccion(m)}
+                          disabled={filaProyeccion !== null}
+                          className="text-xs font-semibold text-violet-600 hover:text-violet-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          Proyección
+                        </button>
                       </td>
                     </tr>
                   )
@@ -1497,6 +1576,94 @@ function GraficoSaldo({ puntos }) {
         </div>
       )}
     </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// FilaProyeccionDirectorio: mismo control que en Finanzas —
+// Mantener proyección / No se cumple / Reprogramar
+// ══════════════════════════════════════════════════════════════
+function FilaProyeccionDirectorio({ mov, nuevaFecha, guardando, error, onChangeFecha, onGuardar, onCancelar }) {
+  const [modo, setModo] = useState(mov.estado_proyeccion === 'normal' ? '' : mov.estado_proyeccion)
+
+  return (
+    <tr style={{ backgroundColor: '#f5f3ff' }} className="border-b border-violet-100">
+      <td className="px-4 py-3" colSpan={8}>
+        <div className="flex flex-wrap items-start gap-4">
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">
+              {mov.proveedor_cliente ?? mov.concepto ?? 'Movimiento'} — {fmtARS(mov.montoEfectivo)}
+            </p>
+            <p className="text-xs text-slate-400">
+              Fecha actual: {fmtFecha(mov.fecha_pago)}
+              {mov.fecha_pago_original && ` (original: ${fmtFecha(mov.fecha_pago_original)})`}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setModo('normal')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors
+                ${modo === 'normal' ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+            >
+              Mantener proyección
+            </button>
+            <button
+              onClick={() => setModo('no_cumple')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors
+                ${modo === 'no_cumple' ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+            >
+              No se cumple
+            </button>
+            <button
+              onClick={() => setModo('reprogramado')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors
+                ${modo === 'reprogramado' ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+            >
+              Reprogramar
+            </button>
+          </div>
+
+          {modo === 'reprogramado' && (
+            <div>
+              <label className="block text-[11px] font-semibold text-violet-700 mb-1">Nueva fecha estimada</label>
+              <input
+                type="date"
+                value={nuevaFecha}
+                onChange={e => onChangeFecha(e.target.value)}
+                className="px-3 py-2 text-sm rounded-xl border border-violet-200 text-slate-900 bg-white
+                          focus:outline-none focus:ring-2 focus:border-transparent"
+                autoFocus
+              />
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 ml-auto">
+            {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
+            <button
+              onClick={onCancelar}
+              disabled={guardando}
+              className="px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-700
+                        transition-colors disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => onGuardar(modo || 'normal')}
+              disabled={guardando || !modo}
+              className="px-4 py-2 text-sm font-semibold text-white rounded-xl transition-colors
+                        disabled:opacity-50 disabled:cursor-not-allowed bg-violet-600 hover:bg-violet-700"
+            >
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          "No se cumple" deja el movimiento visible como pendiente pero no lo suma ni resta del saldo acumulado.
+          "Reprogramar" mueve la fecha de pago y guarda la fecha original para no perder el historial. Nada se borra.
+        </p>
+      </td>
+    </tr>
   )
 }
 

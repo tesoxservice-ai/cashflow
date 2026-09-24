@@ -19,11 +19,12 @@ function formatearPeriodo(fechaStr) {
   return label.charAt(0).toUpperCase() + label.slice(1)
 }
 
+// Desde diciembre de 2024 (fijo) hasta 24 meses después de hoy
 function generarOpcionesPeriodo() {
   const opciones = []
   const hoy = new Date()
-  for (let i = 0; i < 24; i++) {
-    const fecha = new Date(hoy.getFullYear(), hoy.getMonth() + i, 1)
+  const fin = new Date(hoy.getFullYear(), hoy.getMonth() + 24, 1)
+  for (let fecha = new Date(2024, 11, 1); fecha <= fin; fecha.setMonth(fecha.getMonth() + 1)) {
     const value = `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-01`
     const label = fecha.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })
     opciones.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) })
@@ -42,7 +43,7 @@ const RUBROS_PERMITIDOS_OPERACIONES = [
   'Subcontratos',
   'MO directa con Carg Sociales',
   'Mano de obra indirecta con cargas',
-  'Vehiculos',
+  'Vehículos',
   'Otros Gastos Operativos',
   'Gastos Generales',
   'Impuestos',
