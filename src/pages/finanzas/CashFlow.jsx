@@ -62,6 +62,55 @@ const LABEL_CAT = {
   otro:              'Otro',
 }
 
+// Categoría → tipo de movimiento (para recalcular al editar). FIMA queda afuera
+// porque su tipo depende del subtipo (rescate/suscripción), no editable acá.
+const CATEGORIA_TIPO = {
+  factura:           'egreso',
+  ingreso_cliente:   'ingreso',
+  sueldo:            'egreso',
+  impuesto:          'egreso',
+  debito_automatico: 'egreso',
+  otro:              'egreso',
+}
+
+// Mismos rubros que ve Operaciones al cargar presupuestos, más "Ventas"
+// (que se usa para la categoría Ventas / ingreso_cliente).
+const RUBROS_PERMITIDOS_FINANZAS = [
+  'Materiales',
+  'Subcontratos',
+  'MO directa con Carg Sociales',
+  'Mano de obra indirecta con cargas',
+  'Vehículos',
+  'Otros Gastos Operativos',
+  'Gastos Generales',
+  'Impuestos',
+  'Ventas',
+]
+
+const CATEGORIAS_FILTRO = [
+  { value: 'factura',           label: 'Factura' },
+  { value: 'ingreso_cliente',   label: 'Ventas' },
+  { value: 'sueldo',            label: 'Sueldo' },
+  { value: 'impuesto',          label: 'Impuesto' },
+  { value: 'debito_automatico', label: 'Débito automático' },
+  { value: 'fima',              label: 'FIMA' },
+  { value: 'otro',              label: 'Otro' },
+]
+
+// Desde diciembre de 2024 (fijo) hasta 24 meses después de hoy
+function generarPeriodosEdicion() {
+  const lista = []
+  const hoy = new Date()
+  const fin = new Date(hoy.getFullYear(), hoy.getMonth() + 24, 1)
+  for (let d = new Date(2024, 11, 1); d <= fin; d.setMonth(d.getMonth() + 1)) {
+    const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+    const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })
+    lista.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) })
+  }
+  return lista
+}
+const PERIODOS_EDICION = generarPeriodosEdicion()
+
 // ─── Íconos ───────────────────────────────────────────────────────────────────
 
 const IconBell = () => (
@@ -171,6 +220,8 @@ export default function CashFlow() {
   const { user, perfil } = useAuth()
 
   const [cuentas,     setCuentas]     = useState([])
+  const [obras,       setObras]       = useState([])
+  const [rubros,      setRubros]      = useState([])
   const [movimientos, setMovimientos] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
   const [cargando,    setCargando]    = useState(true)
@@ -205,6 +256,18 @@ export default function CashFlow() {
       .eq('activa', true)
       .order('nombre')
       .then(({ data }) => setCuentas(data ?? []))
+    supabase
+      .from('obras')
+      .select('id, codigo, nombre, activa')
+      .eq('activa', true)
+      .order('codigo')
+      .then(({ data }) => setObras(data ?? []))
+    supabase
+      .from('rubros')
+      .select('id, nombre, tipo, activo')
+      .eq('activo', true)
+      .order('nombre')
+      .then(({ data }) => setRubros(data ?? []))
   }, [])
 
   const cargarSaldosBase = useCallback(async () => {
@@ -226,8 +289,8 @@ export default function CashFlow() {
       .from('movimientos')
       .select(`
         id, tipo, categoria, proveedor_cliente, numero_factura,
-        monto_bruto, monto_neto, concepto,
-        periodo, fecha_pago, estado, cuenta_id, created_at,
+        monto_bruto, monto_neto, concepto, observaciones,
+        periodo, fecha_pago, estado, cuenta_id, obra_id, rubro_id, created_at,
         estado_proyeccion, fecha_pago_original,
         obras   ( id, codigo, nombre ),
         rubros  ( id, nombre ),
@@ -355,9 +418,18 @@ export default function CashFlow() {
     setFilaEditando(m.id)
     setErrorEdicion('')
     setValoresEdicion({
-      fecha_pago: m.fecha_pago ?? '',
-      monto_bruto: String(m.monto_bruto ?? ''),
-      estado: m.estado,
+      proveedor_cliente: m.proveedor_cliente ?? '',
+      numero_factura:    m.numero_factura ?? '',
+      categoria:         m.categoria,
+      obra_id:           m.obra_id ?? '',
+      rubro_id:          m.rubro_id ?? '',
+      fecha_pago:        m.fecha_pago ?? '',
+      periodo:           m.periodo ?? '',
+      monto_bruto:       String(m.monto_bruto ?? ''),
+      monto_neto:        m.monto_neto != null ? String(m.monto_neto) : '',
+      concepto:          m.concepto ?? '',
+      observaciones:     m.observaciones ?? '',
+      estado:            m.estado,
     })
   }
 
@@ -380,21 +452,48 @@ export default function CashFlow() {
 
   async function handleGuardarEdicion(id) {
     setErrorEdicion('')
-    if (!valoresEdicion.fecha_pago) { setErrorEdicion('Elegí una fecha.'); return }
+    if (!valoresEdicion.categoria)  { setErrorEdicion('Seleccioná una categoría.'); return }
+    if (!valoresEdicion.fecha_pago) { setErrorEdicion('Elegí una fecha de pago.'); return }
+    if (!valoresEdicion.periodo)    { setErrorEdicion('Elegí un período.'); return }
     const monto = Number(valoresEdicion.monto_bruto)
     if (!valoresEdicion.monto_bruto || isNaN(monto) || monto <= 0) {
       setErrorEdicion('El monto tiene que ser un número mayor a 0.'); return
     }
+    let montoNeto = null
+    if (valoresEdicion.estado === 'ejecutado') {
+      montoNeto = valoresEdicion.monto_neto !== '' && valoresEdicion.monto_neto != null
+        ? Number(valoresEdicion.monto_neto)
+        : monto
+      if (isNaN(montoNeto) || montoNeto <= 0) { setErrorEdicion('El monto neto tiene que ser un número mayor a 0.'); return }
+    }
+
+    // El rubro de una Venta siempre es "Ventas" -- se asigna solo, no se elige.
+    let rubroId = valoresEdicion.rubro_id || null
+    if (valoresEdicion.categoria === 'ingreso_cliente') {
+      const rubroVentas = rubros.find(r => r.nombre === 'Ventas' && r.tipo === (valoresEdicion.obra_id ? 'obra' : 'general'))
+      rubroId = rubroVentas?.id ?? null
+    }
+
+    const payload = {
+      proveedor_cliente: valoresEdicion.proveedor_cliente.trim() || null,
+      numero_factura:    valoresEdicion.numero_factura.trim()    || null,
+      categoria:         valoresEdicion.categoria,
+      obra_id:           valoresEdicion.obra_id || null,
+      rubro_id:          rubroId,
+      fecha_pago:        valoresEdicion.fecha_pago,
+      periodo:           valoresEdicion.periodo,
+      monto_bruto:       monto,
+      monto_neto:        montoNeto,
+      concepto:          valoresEdicion.concepto.trim() || null,
+      observaciones:     valoresEdicion.observaciones.trim() || null,
+      estado:            valoresEdicion.estado,
+    }
+    if (CATEGORIA_TIPO[valoresEdicion.categoria]) payload.tipo = CATEGORIA_TIPO[valoresEdicion.categoria]
 
     setGuardandoEdicion(true)
     const { error: updError } = await supabase
       .from('movimientos')
-      .update({
-        fecha_pago: valoresEdicion.fecha_pago,
-        monto_bruto: monto,
-        estado: valoresEdicion.estado,
-        monto_neto: valoresEdicion.estado === 'ejecutado' ? monto : null,
-      })
+      .update(payload)
       .eq('id', id)
     setGuardandoEdicion(false)
 
@@ -698,6 +797,8 @@ export default function CashFlow() {
             <TablaCashFlow
               filas={filasFiltradas}
               saldoInicial={saldoInicial}
+              obras={obras}
+              rubros={rubros}
               filaEditando={filaEditando}
               valoresEdicion={valoresEdicion}
               guardandoEdicion={guardandoEdicion}
@@ -753,7 +854,7 @@ export default function CashFlow() {
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function TablaCashFlow({
-  filas, saldoInicial,
+  filas, saldoInicial, obras, rubros,
   filaEditando, valoresEdicion, guardandoEdicion, errorEdicion,
   onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion, onBorrarEdicion,
   filaAjustando, valorAjuste, guardandoAjuste, errorAjuste,
@@ -810,6 +911,8 @@ function TablaCashFlow({
                   <FilaEdicionMovimiento
                     key={fila.key}
                     mov={m}
+                    obras={obras}
+                    rubros={rubros}
                     valores={valoresEdicion}
                     guardando={guardandoEdicion}
                     error={errorEdicion}
@@ -1120,52 +1223,90 @@ function FilaProyeccion({ mov, nuevaFecha, guardando, error, onChangeFecha, onGu
   )
 }
 
-function FilaEdicionMovimiento({ mov, valores, guardando, error, onChange, onGuardar, onCancelar, onBorrar }) {
+function FilaEdicionMovimiento({ mov, obras, rubros, valores, guardando, error, onChange, onGuardar, onCancelar, onBorrar }) {
+  const rubrosFiltrados = (rubros ?? []).filter(r =>
+    r.activo && RUBROS_PERMITIDOS_FINANZAS.includes(r.nombre)
+    && (valores.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
+  )
+
   return (
     <tr style={{ backgroundColor: '#ecfeff' }} className="border-b border-cyan-100">
       <td className="px-4 py-3" colSpan={9}>
-        <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Proveedor / Cliente</label>
-            <p className="text-sm text-slate-700 px-3 py-2">{mov.proveedor_cliente ?? mov.concepto ?? '—'}</p>
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Fecha de pago</label>
-            <input
-              type="date"
-              value={valores.fecha_pago ?? ''}
-              onChange={e => onChange({ fecha_pago: e.target.value })}
-              className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
-                        focus:outline-none focus:ring-2 focus:border-transparent"
-              style={{ '--tw-ring-color': '#0e7490' }}
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Monto</label>
-            <input
-              type="number"
-              step="0.01"
-              value={valores.monto_bruto ?? ''}
-              onChange={e => onChange({ monto_bruto: e.target.value })}
-              className="w-36 px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
-                        focus:outline-none focus:ring-2 focus:border-transparent"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Estado</label>
-            <select
-              value={valores.estado ?? 'proyectado'}
-              onChange={e => onChange({ estado: e.target.value })}
-              className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
-                        focus:outline-none focus:ring-2 focus:border-transparent"
-            >
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          <CampoEdicion label="Proveedor / Cliente">
+            <input type="text" value={valores.proveedor_cliente ?? ''}
+              onChange={e => onChange({ proveedor_cliente: e.target.value })} className={inputEdicionCls} />
+          </CampoEdicion>
+          <CampoEdicion label="Número de factura">
+            <input type="text" value={valores.numero_factura ?? ''}
+              onChange={e => onChange({ numero_factura: e.target.value })} className={inputEdicionCls} />
+          </CampoEdicion>
+          <CampoEdicion label="Categoría">
+            <select value={valores.categoria ?? ''}
+              onChange={e => onChange({ categoria: e.target.value })} className={inputEdicionCls}>
+              {CATEGORIAS_FILTRO.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+              <option value="fima">FIMA</option>
+            </select>
+          </CampoEdicion>
+          <CampoEdicion label="Obra">
+            <select value={valores.obra_id ?? ''}
+              onChange={e => onChange({ obra_id: e.target.value, rubro_id: '' })} className={inputEdicionCls}>
+              <option value="">— Sin obra / General —</option>
+              {(obras ?? []).map(o => <option key={o.id} value={o.id}>{o.codigo} · {o.nombre}</option>)}
+            </select>
+          </CampoEdicion>
+          <CampoEdicion label="Rubro">
+            {valores.categoria === 'ingreso_cliente' ? (
+              <p className="text-sm text-slate-500 px-3 py-2">Ventas (automático)</p>
+            ) : (
+              <select value={valores.rubro_id ?? ''}
+                onChange={e => onChange({ rubro_id: e.target.value })} className={inputEdicionCls}>
+                <option value="">— Sin rubro —</option>
+                {rubrosFiltrados.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+              </select>
+            )}
+          </CampoEdicion>
+          <CampoEdicion label="Fecha de pago">
+            <input type="date" value={valores.fecha_pago ?? ''}
+              onChange={e => onChange({ fecha_pago: e.target.value })} className={inputEdicionCls} />
+          </CampoEdicion>
+          <CampoEdicion label="Período">
+            <select value={valores.periodo ?? ''}
+              onChange={e => onChange({ periodo: e.target.value })} className={inputEdicionCls}>
+              {PERIODOS_EDICION.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+          </CampoEdicion>
+          <CampoEdicion label="Monto bruto">
+            <input type="number" step="0.01" value={valores.monto_bruto ?? ''}
+              onChange={e => onChange({ monto_bruto: e.target.value })} className={inputEdicionCls + ' text-right'} />
+          </CampoEdicion>
+          <CampoEdicion label="Estado">
+            <select value={valores.estado ?? 'proyectado'}
+              onChange={e => onChange({ estado: e.target.value })} className={inputEdicionCls}>
               <option value="proyectado">Proyectado</option>
               <option value="ejecutado">Ejecutado</option>
             </select>
-          </div>
+          </CampoEdicion>
+          {valores.estado === 'ejecutado' && (
+            <CampoEdicion label="Monto neto (real cobrado/pagado)">
+              <input type="number" step="0.01" placeholder={valores.monto_bruto || '0,00'}
+                value={valores.monto_neto ?? ''}
+                onChange={e => onChange({ monto_neto: e.target.value })} className={inputEdicionCls + ' text-right'} />
+            </CampoEdicion>
+          )}
+          <CampoEdicion label="Concepto">
+            <input type="text" value={valores.concepto ?? ''}
+              onChange={e => onChange({ concepto: e.target.value })} className={inputEdicionCls} />
+          </CampoEdicion>
+          <CampoEdicion label="Observaciones">
+            <input type="text" placeholder="Ej: Retención IIBB descontada" value={valores.observaciones ?? ''}
+              onChange={e => onChange({ observaciones: e.target.value })} className={inputEdicionCls} />
+          </CampoEdicion>
+        </div>
 
+        <div className="flex items-center gap-2 mt-3">
+          {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
           <div className="flex items-center gap-2 ml-auto">
-            {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
             <button
               onClick={onBorrar}
               disabled={guardando}
@@ -1197,6 +1338,18 @@ function FilaEdicionMovimiento({ mov, valores, guardando, error, onChange, onGua
     </tr>
   )
 }
+
+function CampoEdicion({ label, children }) {
+  return (
+    <div>
+      <label className="block text-[11px] font-semibold text-slate-500 mb-1">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+const inputEdicionCls = `w-full px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
+  focus:outline-none focus:ring-2 focus:border-transparent`
 
 function CardResumen({ label, valor, subLabel, positivo, grande = false }) {
   return (
