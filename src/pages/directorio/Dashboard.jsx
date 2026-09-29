@@ -138,6 +138,8 @@ async function cargarDatosExportDirectorio() {
     { data: movPeriodo, error: e7 },
     { data: presTodos,  error: e8 },
     { data: ventasProy, error: e9 },
+    { data: fechasEstGasto, error: e10 },
+    { data: fechasEstVenta, error: e11 },
   ] = await Promise.all([
     supabase.from('movimientos')
       .select('id,tipo,categoria,proveedor_cliente,numero_factura,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,concepto,estado_proyeccion')
@@ -155,9 +157,11 @@ async function cargarDatosExportDirectorio() {
       .eq('periodo', periodo).eq('categoria', 'factura').eq('tipo', 'egreso'),
     supabase.from('presupuestos').select('id,obra_id,rubro_id,periodo,monto'),
     supabase.from('ventas_proyectadas').select('id,obra_id,periodo,monto,registrado'),
+    supabase.from('gasto_proyectado_fecha_estimada').select('obra_id,rubro_id,periodo,fecha_estimada,cerrado'),
+    supabase.from('venta_proyectada_fecha_estimada').select('obra_id,periodo,fecha_estimada,cerrado,concepto'),
   ])
 
-  const errs = [e1, e2, e3, e4, e5, e6, e7, e8, e9].filter(Boolean)
+  const errs = [e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11].filter(Boolean)
   if (errs.length) throw new Error('No se pudieron cargar los datos para el Excel.')
 
   const obraMap  = {}; (obrasData  ?? []).forEach(o => obraMap[o.id]  = o)
@@ -183,9 +187,9 @@ async function cargarDatosExportDirectorio() {
 
   // Movimientos reales + filas virtuales de "gasto proyectado" (presupuesto sin
   // facturar) y "venta proyectada" (venta sin registrar) — ver src/lib/proyeccionPresupuesto.js.
-  const movConProyeccion = combinarConProyeccion(movEnriq, presTodos ?? [], ventasProy ?? [], obrasData ?? [], rubrosData ?? [])
+  const movConProyeccion = combinarConProyeccion(movEnriq, presTodos ?? [], ventasProy ?? [], fechasEstGasto ?? [], fechasEstVenta ?? [], obrasData ?? [], rubrosData ?? [])
     .map(m => m._virtual
-      ? { ...m, obraCodigo: m.obras?.codigo ?? '', concepto: m.categoria === 'venta_proyectada' ? 'Venta proyectada — todavía sin registrar' : `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar` }
+      ? { ...m, obraCodigo: m.obras?.codigo ?? '', concepto: m.categoria === 'venta_proyectada' ? `Venta proyectada de ${labelPeriodo(m.periodo)}${m._conceptoManual ? ' — ' + m._conceptoManual : ''}` : `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar` }
       : m)
 
   const sumaSaldosBase = (saldosData ?? []).reduce((mapa, s) => {
@@ -751,6 +755,8 @@ function TabCashFlow() {
   const [rubros,      setRubros]      = useState([])
   const [presupuestos, setPresupuestos] = useState([])
   const [ventasProyectadas, setVentasProyectadas] = useState([])
+  const [fechasEstimadasGasto, setFechasEstimadasGasto] = useState([])
+  const [fechasEstimadasVenta, setFechasEstimadasVenta] = useState([])
   const [movimientos, setMovimientos] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
   const [cargando,     setCargando]     = useState(true)
@@ -760,7 +766,7 @@ function TabCashFlow() {
   const [filtroCuenta,    setFiltroCuenta]    = useState('')
   const [filtroCategoria, setFiltroCategoria] = useState('')
   const [filtroBusqueda,  setFiltroBusqueda]  = useState('')
-  const [horizonte,       setHorizonte]       = useState(90)
+  const [horizonte,       setHorizonte]       = useState(365)
   const [mostrarDetalle,  setMostrarDetalle]  = useState(false)
 
   const [filaProyeccion,       setFilaProyeccion]       = useState(null)
@@ -779,6 +785,10 @@ function TabCashFlow() {
       .then(({ data }) => setPresupuestos(data ?? []))
     supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado')
       .then(({ data }) => setVentasProyectadas(data ?? []))
+    supabase.from('gasto_proyectado_fecha_estimada').select('obra_id, rubro_id, periodo, fecha_estimada, cerrado')
+      .then(({ data }) => setFechasEstimadasGasto(data ?? []))
+    supabase.from('venta_proyectada_fecha_estimada').select('obra_id, periodo, fecha_estimada, cerrado, concepto')
+      .then(({ data }) => setFechasEstimadasVenta(data ?? []))
   }, [])
 
   useEffect(() => {
@@ -881,8 +891,8 @@ function TabCashFlow() {
   // presupuesto de Operaciones todavía no se facturó). Las virtuales nunca se
   // guardan en la base: se recalculan cada vez a partir de presupuestos vivos.
   const movimientosCombinados = useMemo(
-    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, obras, rubros),
-    [movimientos, presupuestos, ventasProyectadas, obras, rubros]
+    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros),
+    [movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros]
   )
 
   const { movimientosConSaldo } = useMemo(() => {
@@ -1140,7 +1150,17 @@ function TabCashFlow() {
                             {m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar
                           </span>
                         ) : m.categoria === 'venta_proyectada' ? (
-                          <span className="italic text-slate-500">Venta proyectada — todavía sin registrar</span>
+                          <span className="italic text-slate-500">
+                            Venta proyectada de {labelPeriodo(m.periodo)}
+                            {m._conceptoManual && (
+                              <span className="block not-italic text-slate-600 font-medium text-[10px]">{m._conceptoManual}</span>
+                            )}
+                            {m._gastoReal > 0 && (
+                              <span className="block not-italic text-slate-400 text-[10px]">
+                                Ya registrado: {fmtARS(m._gastoReal)} de {fmtARS(m._presupuestado)}
+                              </span>
+                            )}
+                          </span>
                         ) : (
                           m.proveedor_cliente ?? m.concepto ?? '—'
                         )}

@@ -35,6 +35,25 @@ const CATEGORIAS = [
 
 const CATEGORIAS_REINTEGRO = ['reintegro_impuestos', 'reintegro_seguros', 'reintegro_otros']
 
+// Conceptos fijos para "Impuesto / Comisión bancaria" (se repiten siempre,
+// se eligen de una lista en vez de escribirlos a mano cada vez).
+const CONCEPTOS_IMPUESTO = [
+  'IVA',
+  'COM. GESTION',
+  'TRANSF.FDOS',
+  'COMISION SERVICIO DE CUENTA',
+  'INTERESES SOBRE SALDOS',
+  'IMPUESTO DE SELLOS',
+  'COM. CAJA DE SEGURIDAD',
+  'ING. BRUTOS S/ CRED',
+  'REG.RECAU.SIRCREB',
+  'PERCEP. IVA',
+  'IMP. ING. BRUTOS',
+  'IMP. DEB. LEY 25413 GRAL.',
+  'IMP. CRE. LEY 25413',
+  'DEV.IMP.DEB.LEY 25413-ALIC.GENERAL',
+]
+
 const FORMAS_PAGO = [
   { value: 'transferencia',     label: 'Transferencia'     },
   { value: 'echeq',             label: 'eCheq'             },
@@ -68,6 +87,11 @@ function generarPeriodos() {
   return periodos
 }
 const PERIODOS = generarPeriodos()
+
+function periodoActual() {
+  const h = new Date()
+  return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-01`
+}
 
 // Estado inicial del formulario (todos los campos posibles)
 const FORM_VACIO = {
@@ -109,7 +133,10 @@ export default function FormularioMovimiento({
 
   // ── Cuando cambia la categoría: resetea el form excepto categoría ──
   function handleCategoria(cat) {
-    setForm({ ...FORM_VACIO, categoria: cat })
+    // Impuestos/comisiones bancarias son del mes en que se cargan, no hay
+    // que elegir período a mano cada vez.
+    const periodo = cat === 'impuesto' ? periodoActual() : FORM_VACIO.periodo
+    setForm({ ...FORM_VACIO, categoria: cat, periodo })
     setError('')
     setAdvertencia(null)
   }
@@ -356,8 +383,8 @@ export default function FormularioMovimiento({
               </Campo>
             )}
 
-            {/* Obra (factura, ingreso_cliente) */}
-            {(cat === 'factura' || cat === 'ingreso_cliente') && (
+            {/* Obra (factura, ingreso_cliente, otro) */}
+            {(cat === 'factura' || cat === 'ingreso_cliente' || cat === 'otro') && (
               <Campo label="Obra">
                 <select value={form.obra_id} onChange={e => handleObra(e.target.value)} className={selectCls}>
                   <option value="">— Sin obra / General —</option>
@@ -443,10 +470,17 @@ export default function FormularioMovimiento({
 
             {/* Concepto */}
             <Campo label="Concepto">
-              <input type="text" placeholder="Descripción libre"
-                value={form.concepto}
-                onChange={e => set('concepto', e.target.value)}
-                className={inputCls} />
+              {cat === 'impuesto' ? (
+                <select value={form.concepto} onChange={e => set('concepto', e.target.value)} className={selectCls}>
+                  <option value="">— Seleccioná —</option>
+                  {CONCEPTOS_IMPUESTO.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              ) : (
+                <input type="text" placeholder="Descripción libre"
+                  value={form.concepto}
+                  onChange={e => set('concepto', e.target.value)}
+                  className={inputCls} />
+              )}
             </Campo>
 
           </div>

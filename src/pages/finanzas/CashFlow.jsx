@@ -242,6 +242,8 @@ export default function CashFlow() {
   const [movimientos, setMovimientos] = useState([])
   const [presupuestos, setPresupuestos] = useState([])
   const [ventasProyectadas, setVentasProyectadas] = useState([])
+  const [fechasEstimadasGasto, setFechasEstimadasGasto] = useState([])
+  const [fechasEstimadasVenta, setFechasEstimadasVenta] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
   const [cargando,     setCargando]     = useState(true)
   const [actualizando, setActualizando] = useState(false)
@@ -249,7 +251,7 @@ export default function CashFlow() {
 
   const [filtroCuenta, setFiltroCuenta] = useState('')
   const [filtroEstado, setFiltroEstado] = useState('')
-  const [horizonte,    setHorizonte]    = useState(90)
+  const [horizonte,    setHorizonte]    = useState(365)
   const [filtroFechaDesde, setFiltroFechaDesde] = useState('')
   const [filtroCategoria,  setFiltroCategoria]  = useState('')
   const [filtroBusqueda,   setFiltroBusqueda]   = useState('')
@@ -268,6 +270,12 @@ export default function CashFlow() {
   const [nuevaFechaProyeccion, setNuevaFechaProyeccion] = useState('')
   const [guardandoProyeccion, setGuardandoProyeccion] = useState(false)
   const [errorProyeccion,     setErrorProyeccion]     = useState('')
+
+  const [filaEditandoFecha,  setFilaEditandoFecha]  = useState(null)
+  const [nuevaFechaEstimada, setNuevaFechaEstimada]  = useState('')
+  const [nuevoConceptoVenta, setNuevoConceptoVenta]  = useState('')
+  const [guardandoFecha,     setGuardandoFecha]      = useState(false)
+  const [errorFecha,         setErrorFecha]          = useState('')
 
   useEffect(() => {
     supabase
@@ -292,11 +300,34 @@ export default function CashFlow() {
       .from('presupuestos')
       .select('id, obra_id, rubro_id, periodo, monto')
       .then(({ data }) => setPresupuestos(data ?? []))
-    supabase
+  }, [])
+
+  const cargarVentasProyectadas = useCallback(async () => {
+    const { data } = await supabase
       .from('ventas_proyectadas')
       .select('id, obra_id, periodo, monto, registrado')
-      .then(({ data }) => setVentasProyectadas(data ?? []))
+    setVentasProyectadas(data ?? [])
   }, [])
+
+  useEffect(() => { cargarVentasProyectadas() }, [cargarVentasProyectadas])
+
+  const cargarFechasEstimadasGasto = useCallback(async () => {
+    const { data } = await supabase
+      .from('gasto_proyectado_fecha_estimada')
+      .select('obra_id, rubro_id, periodo, fecha_estimada, cerrado')
+    setFechasEstimadasGasto(data ?? [])
+  }, [])
+
+  useEffect(() => { cargarFechasEstimadasGasto() }, [cargarFechasEstimadasGasto])
+
+  const cargarFechasEstimadasVenta = useCallback(async () => {
+    const { data } = await supabase
+      .from('venta_proyectada_fecha_estimada')
+      .select('obra_id, periodo, fecha_estimada, cerrado, concepto')
+    setFechasEstimadasVenta(data ?? [])
+  }, [])
+
+  useEffect(() => { cargarFechasEstimadasVenta() }, [cargarFechasEstimadasVenta])
 
   const cargarSaldosBase = useCallback(async () => {
     const { data } = await supabase
@@ -367,8 +398,8 @@ export default function CashFlow() {
   // presupuesto de Operaciones todavía no se facturó). Las virtuales nunca se
   // guardan en la base: se recalculan cada vez a partir de presupuestos vivos.
   const movimientosCombinados = useMemo(
-    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, obras, rubros),
-    [movimientos, presupuestos, ventasProyectadas, obras, rubros]
+    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros),
+    [movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros]
   )
 
   const { movimientosConSaldo, saldoInicial } = useMemo(() => {
@@ -643,6 +674,77 @@ export default function CashFlow() {
     await cargarMovimientos({ silencioso: true })
   }
 
+  function handleIniciarEditarFecha(m) {
+    setFilaEditandoFecha(m.id)
+    setNuevaFechaEstimada(m.fecha_pago ?? '')
+    setNuevoConceptoVenta(m._conceptoManual ?? '')
+    setErrorFecha('')
+  }
+
+  function handleCancelarEditarFecha() {
+    setFilaEditandoFecha(null)
+    setNuevaFechaEstimada('')
+    setNuevoConceptoVenta('')
+    setErrorFecha('')
+  }
+
+  // Fecha estimada (y concepto, para ventas) de una fila gris ("Gasto
+  // proyectado" / "Venta proyectada"). No toca el presupuesto ni la venta
+  // proyectada original de Operaciones: guarda todo aparte, según el tipo de fila.
+  async function handleGuardarFecha(m) {
+    setErrorFecha('')
+    if (!nuevaFechaEstimada) { setErrorFecha('Elegí una fecha.'); return }
+
+    setGuardandoFecha(true)
+    let error
+    if (m.categoria === 'venta_proyectada') {
+      ;({ error } = await supabase
+        .from('venta_proyectada_fecha_estimada')
+        .upsert({ ...m._claveFecha, fecha_estimada: nuevaFechaEstimada, concepto: nuevoConceptoVenta.trim() || null }, { onConflict: 'obra_id,periodo' }))
+    } else {
+      ;({ error } = await supabase
+        .from('gasto_proyectado_fecha_estimada')
+        .upsert({ ...m._claveFecha, fecha_estimada: nuevaFechaEstimada }, { onConflict: 'obra_id,rubro_id,periodo' }))
+    }
+    setGuardandoFecha(false)
+
+    if (error) { setErrorFecha('No se pudo guardar la fecha.'); return }
+
+    setFilaEditandoFecha(null)
+    setNuevaFechaEstimada('')
+    setNuevoConceptoVenta('')
+    if (m.categoria === 'venta_proyectada') await cargarFechasEstimadasVenta()
+    else await cargarFechasEstimadasGasto()
+  }
+
+  // Cierra una proyección "a mano": Finanzas ya revisó que el saldo restante
+  // no va a pasar, y no debe seguir apareciendo en el Cash Flow. No borra el
+  // presupuesto ni la venta proyectada original, solo la oculta.
+  async function handleCerrarProyeccion(m) {
+    if (!window.confirm('¿Cerrar esta proyección? El saldo restante deja de aparecer en el Cash Flow. El presupuesto/venta original de Operaciones no se toca.')) return
+    setErrorFecha('')
+    setGuardandoFecha(true)
+    let error
+    if (m.categoria === 'venta_proyectada') {
+      ;({ error } = await supabase
+        .from('venta_proyectada_fecha_estimada')
+        .upsert({ ...m._claveFecha, cerrado: true }, { onConflict: 'obra_id,periodo' }))
+    } else {
+      ;({ error } = await supabase
+        .from('gasto_proyectado_fecha_estimada')
+        .upsert({ ...m._claveFecha, cerrado: true }, { onConflict: 'obra_id,rubro_id,periodo' }))
+    }
+    setGuardandoFecha(false)
+
+    if (error) { setErrorFecha('No se pudo cerrar la proyección.'); return }
+
+    setFilaEditandoFecha(null)
+    setNuevaFechaEstimada('')
+    setNuevoConceptoVenta('')
+    if (m.categoria === 'venta_proyectada') await cargarFechasEstimadasVenta()
+    else await cargarFechasEstimadasGasto()
+  }
+
   const selCls = `w-full px-3 py-2 text-sm rounded-xl border border-slate-200
     text-slate-900 bg-white focus:outline-none focus:ring-2 focus:border-transparent`
 
@@ -874,6 +976,17 @@ export default function CashFlow() {
               onCambiarNuevaFecha={setNuevaFechaProyeccion}
               onGuardarProyeccion={handleGuardarProyeccion}
               onCancelarProyeccion={handleCancelarProyeccion}
+              filaEditandoFecha={filaEditandoFecha}
+              nuevaFechaEstimada={nuevaFechaEstimada}
+              nuevoConceptoVenta={nuevoConceptoVenta}
+              guardandoFecha={guardandoFecha}
+              errorFecha={errorFecha}
+              onIniciarEditarFecha={handleIniciarEditarFecha}
+              onCambiarFechaEstimada={setNuevaFechaEstimada}
+              onCambiarConceptoVenta={setNuevoConceptoVenta}
+              onGuardarFecha={handleGuardarFecha}
+              onCancelarEditarFecha={handleCancelarEditarFecha}
+              onCerrarProyeccion={handleCerrarProyeccion}
             />
 
             {/* Pie de totales */}
@@ -911,6 +1024,8 @@ function TablaCashFlow({
   onIniciarAjuste, onCambiarAjuste, onGuardarAjuste, onCancelarAjuste,
   filaProyeccion, nuevaFechaProyeccion, guardandoProyeccion, errorProyeccion,
   onIniciarProyeccion, onCambiarNuevaFecha, onGuardarProyeccion, onCancelarProyeccion,
+  filaEditandoFecha, nuevaFechaEstimada, nuevoConceptoVenta, guardandoFecha, errorFecha,
+  onIniciarEditarFecha, onCambiarFechaEstimada, onCambiarConceptoVenta, onGuardarFecha, onCancelarEditarFecha, onCerrarProyeccion,
 }) {
   const filasRender = useMemo(() => {
     const resultado   = []
@@ -1004,6 +1119,24 @@ function TablaCashFlow({
                 )
               }
 
+              if (filaEditandoFecha === m.id) {
+                return (
+                  <FilaEditarFechaEstimada
+                    key={fila.key}
+                    mov={m}
+                    nuevaFecha={nuevaFechaEstimada}
+                    nuevoConcepto={nuevoConceptoVenta}
+                    guardando={guardandoFecha}
+                    error={errorFecha}
+                    onChangeFecha={onCambiarFechaEstimada}
+                    onChangeConcepto={onCambiarConceptoVenta}
+                    onGuardar={() => onGuardarFecha(m)}
+                    onCancelar={onCancelarEditarFecha}
+                    onCerrar={() => onCerrarProyeccion(m)}
+                  />
+                )
+              }
+
               return (
                 <tr key={fila.key}
                   className={`border-b border-slate-100 last:border-0 transition-colors
@@ -1044,7 +1177,15 @@ function TablaCashFlow({
                       </span>
                     ) : m.categoria === 'venta_proyectada' ? (
                       <span className="truncate block italic text-slate-500">
-                        Venta proyectada — todavía sin registrar
+                        Venta proyectada de {labelPeriodo(m.periodo)}
+                        {m._conceptoManual && (
+                          <span className="block not-italic text-slate-600 font-medium">{m._conceptoManual}</span>
+                        )}
+                        {m._gastoReal > 0 && (
+                          <span className="block not-italic text-slate-400">
+                            Ya registrado: {fmtARS(m._gastoReal)} de {fmtARS(m._presupuestado)}
+                          </span>
+                        )}
                       </span>
                     ) : (
                       <span className="truncate block" title={m.proveedor_cliente ?? m.concepto ?? ''}>
@@ -1080,9 +1221,25 @@ function TablaCashFlow({
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     {m._virtual ? (
-                      <span className="text-xs text-slate-400 italic">
-                        {m.categoria === 'venta_proyectada' ? 'Estimado — ventas Operaciones' : 'Estimado — presupuesto Operaciones'}
-                      </span>
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          onClick={() => onIniciarEditarFecha(m)}
+                          disabled={filaEditandoFecha !== null}
+                          title="Estimado por Operaciones — podés ajustar la fecha"
+                          className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                          style={{ color: '#0e7490' }}
+                        >
+                          Editar fecha
+                        </button>
+                        <button
+                          onClick={() => onCerrarProyeccion(m)}
+                          disabled={filaEditandoFecha !== null}
+                          title="El saldo restante deja de aparecer en el Cash Flow. No borra el presupuesto/venta original."
+                          className="text-xs font-semibold text-red-600 hover:text-red-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          Cerrar proyección
+                        </button>
+                      </div>
                     ) : (
                       <div className="flex items-center justify-end gap-3">
                         <button
@@ -1284,6 +1441,84 @@ function FilaProyeccion({ mov, nuevaFecha, guardando, error, onChangeFecha, onGu
         <p className="text-[11px] text-slate-400 mt-2">
           "No se cumple" deja el movimiento visible como pendiente pero no lo suma ni resta del saldo acumulado.
           "Reprogramar" mueve la fecha de pago y guarda la fecha original para no perder el historial. Nada se borra.
+        </p>
+      </td>
+    </tr>
+  )
+}
+
+function FilaEditarFechaEstimada({ mov, nuevaFecha, nuevoConcepto, guardando, error, onChangeFecha, onChangeConcepto, onGuardar, onCancelar, onCerrar }) {
+  const esVenta = mov.categoria === 'venta_proyectada'
+  return (
+    <tr style={{ backgroundColor: '#f8fafc' }} className="border-b border-slate-200">
+      <td className="px-4 py-3" colSpan={9}>
+        <div className="flex flex-wrap items-center gap-4">
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 mb-1">
+              {esVenta ? `Venta proyectada de ${labelPeriodo(mov.periodo)}` : `${mov.rubros?.nombre ?? 'Rubro'} — saldo sin facturar`} — {fmtARS(mov.montoEfectivo)}
+            </p>
+            <p className="text-xs text-slate-400">Fecha estimada actual: {fmtFecha(mov.fecha_pago)}</p>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Nueva fecha estimada</label>
+            <input
+              type="date"
+              value={nuevaFecha}
+              onChange={e => onChangeFecha(e.target.value)}
+              className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
+                        focus:outline-none focus:ring-2 focus:border-transparent"
+              autoFocus
+            />
+          </div>
+
+          {esVenta && (
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Concepto (para identificarla en el Cash Flow)</label>
+              <input
+                type="text"
+                placeholder="Ej: Anticipo obra 678, cobro estimado con 60 días"
+                value={nuevoConcepto}
+                onChange={e => onChangeConcepto(e.target.value)}
+                className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white w-64
+                          focus:outline-none focus:ring-2 focus:border-transparent"
+              />
+            </div>
+          )}
+
+          <button
+            onClick={onCerrar}
+            disabled={guardando}
+            className="px-3 py-2 text-sm font-semibold text-red-600 hover:text-red-700
+                      transition-colors disabled:opacity-50"
+            title="El saldo restante deja de aparecer en el Cash Flow. No borra el presupuesto/venta original."
+          >
+            Cerrar proyección
+          </button>
+
+          <div className="flex items-center gap-2 ml-auto">
+            {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
+            <button
+              onClick={onCancelar}
+              disabled={guardando}
+              className="px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-700
+                        transition-colors disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={onGuardar}
+              disabled={guardando}
+              className="px-4 py-2 text-sm font-semibold text-white rounded-xl transition-colors
+                        disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ backgroundColor: '#0e7490' }}
+            >
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          "Guardar" solo cambia cuándo se muestra esta proyección en el Cash Flow. "Cerrar proyección" la oculta del todo (el saldo restante no va a pasar). Ninguna de las dos toca el presupuesto ni la venta proyectada que cargó Operaciones.
         </p>
       </td>
     </tr>
