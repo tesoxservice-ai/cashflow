@@ -27,8 +27,13 @@ const CATEGORIAS = [
   { value: 'impuesto',          label: 'Impuesto / Comisión bancaria', tipo: 'egreso' },
   { value: 'debito_automatico', label: 'Débito automático',         tipo: 'egreso'  },
   { value: 'fima',              label: 'Movimiento FIMA',           tipo: null      }, // depende del subtipo
+  { value: 'reintegro_impuestos', label: 'Reintegro impuestos',     tipo: 'ingreso' },
+  { value: 'reintegro_seguros',   label: 'Reintegro seguros',       tipo: 'ingreso' },
+  { value: 'reintegro_otros',     label: 'Otros reintegros',        tipo: 'ingreso' },
   { value: 'otro',              label: 'Otro',                      tipo: 'egreso'  },
 ]
+
+const CATEGORIAS_REINTEGRO = ['reintegro_impuestos', 'reintegro_seguros', 'reintegro_otros']
 
 const FORMAS_PAGO = [
   { value: 'transferencia',     label: 'Transferencia'     },
@@ -211,6 +216,7 @@ export default function FormularioMovimiento({
     // Validaciones comunes
     if (!form.categoria)   { setError('Seleccioná una categoría.'); return }
     if (!form.periodo)     { setError('Seleccioná un período.'); return }
+    if (!form.fecha_pago)  { setError('Elegí la fecha de pago (sin fecha el movimiento no entra bien al Cash Flow).'); return }
     if (!form.cuenta_id)   { setError('Seleccioná una cuenta.'); return }
     if (!form.monto_bruto || isNaN(Number(form.monto_bruto)) || Number(form.monto_bruto) <= 0) {
       setError('Ingresá un monto válido mayor a cero.')
@@ -321,11 +327,11 @@ export default function FormularioMovimiento({
         {cat && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 
-            {/* Proveedor / Cliente */}
-            {(cat === 'factura' || cat === 'ingreso_cliente' || cat === 'otro') && (
-              <Campo label={cat === 'ingreso_cliente' ? 'Cliente' : 'Proveedor'}>
+            {/* Proveedor / Cliente / Origen del reintegro */}
+            {(cat === 'factura' || cat === 'ingreso_cliente' || cat === 'otro' || CATEGORIAS_REINTEGRO.includes(cat)) && (
+              <Campo label={cat === 'ingreso_cliente' ? 'Cliente' : CATEGORIAS_REINTEGRO.includes(cat) ? 'Origen' : 'Proveedor'}>
                 <input type="text"
-                  placeholder={cat === 'ingreso_cliente' ? 'Nombre del cliente' : 'Nombre del proveedor'}
+                  placeholder={cat === 'ingreso_cliente' ? 'Nombre del cliente' : CATEGORIAS_REINTEGRO.includes(cat) ? 'Ej: AFIP, aseguradora...' : 'Nombre del proveedor'}
                   value={form.proveedor_cliente}
                   onChange={e => set('proveedor_cliente', e.target.value)}
                   className={inputCls} />
@@ -404,7 +410,7 @@ export default function FormularioMovimiento({
 
             {/* Fecha de pago */}
             {cat !== '' && (
-              <Campo label="Fecha de pago">
+              <Campo label="Fecha de pago *">
                 <input type="date" value={form.fecha_pago}
                   onChange={e => set('fecha_pago', e.target.value)} className={inputCls} />
               </Campo>

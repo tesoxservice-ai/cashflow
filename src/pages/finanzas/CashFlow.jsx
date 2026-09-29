@@ -50,6 +50,9 @@ const BADGE_CAT = {
   impuesto:          'bg-red-50 text-red-700',
   debito_automatico: 'bg-yellow-50 text-yellow-700',
   fima:              'bg-cyan-50 text-cyan-700',
+  reintegro_impuestos: 'bg-teal-50 text-teal-700',
+  reintegro_seguros:   'bg-teal-50 text-teal-700',
+  reintegro_otros:     'bg-teal-50 text-teal-700',
   otro:              'bg-slate-100 text-slate-600',
 }
 const LABEL_CAT = {
@@ -59,6 +62,9 @@ const LABEL_CAT = {
   impuesto:          'Impuesto',
   debito_automatico: 'Débito aut.',
   fima:              'FIMA',
+  reintegro_impuestos: 'Reintegro impuestos',
+  reintegro_seguros:   'Reintegro seguros',
+  reintegro_otros:     'Otros reintegros',
   otro:              'Otro',
 }
 
@@ -70,6 +76,9 @@ const CATEGORIA_TIPO = {
   sueldo:            'egreso',
   impuesto:          'egreso',
   debito_automatico: 'egreso',
+  reintegro_impuestos: 'ingreso',
+  reintegro_seguros:   'ingreso',
+  reintegro_otros:     'ingreso',
   otro:              'egreso',
 }
 
@@ -94,6 +103,9 @@ const CATEGORIAS_FILTRO = [
   { value: 'impuesto',          label: 'Impuesto' },
   { value: 'debito_automatico', label: 'Débito automático' },
   { value: 'fima',              label: 'FIMA' },
+  { value: 'reintegro_impuestos', label: 'Reintegro impuestos' },
+  { value: 'reintegro_seguros',   label: 'Reintegro seguros' },
+  { value: 'reintegro_otros',     label: 'Otros reintegros' },
   { value: 'otro',              label: 'Otro' },
 ]
 
@@ -359,8 +371,10 @@ export default function CashFlow() {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
 
     let saldoHoy = sumaSaldosBase
+    // Sin fecha de pago no se puede saber si ya pasó: no entra al saldo de hoy
+    // (en la tabla esos movimientos quedan al final, igual que acá).
     movimientos.forEach(m => {
-      const fecha = m.fecha_pago ?? m.periodo
+      const fecha = m.fecha_pago
       if (!fecha || fecha > hoy) return
       if (m.estado_proyeccion === 'no_cumple') return
       if (m.tipo === 'ingreso') saldoHoy += m.montoEfectivo
@@ -370,7 +384,7 @@ export default function CashFlow() {
     function posicionEn(fechaLimite) {
       let ultimo = sumaSaldosBase
       for (const m of movimientosConSaldo) {
-        const fecha = m.fecha_pago ?? m.periodo
+        const fecha = m.fecha_pago
         if (!fecha || fecha > fechaLimite) break
         ultimo = m.saldoAcumulado
       }

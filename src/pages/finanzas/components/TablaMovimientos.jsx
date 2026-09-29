@@ -48,6 +48,9 @@ const BADGE_CAT = {
   impuesto:          'bg-red-50 text-red-700 border-red-100',
   debito_automatico: 'bg-yellow-50 text-yellow-700 border-yellow-100',
   fima:              'bg-blue-50 text-blue-700 border-blue-100',
+  reintegro_impuestos: 'bg-teal-50 text-teal-700 border-teal-100',
+  reintegro_seguros:   'bg-teal-50 text-teal-700 border-teal-100',
+  reintegro_otros:     'bg-teal-50 text-teal-700 border-teal-100',
   otro:              'bg-slate-100 text-slate-600 border-slate-200',
 }
 const LABEL_CAT = {
@@ -57,6 +60,9 @@ const LABEL_CAT = {
   impuesto:          'Impuesto',
   debito_automatico: 'Débito aut.',
   fima:              'FIMA',
+  reintegro_impuestos: 'Reintegro impuestos',
+  reintegro_seguros:   'Reintegro seguros',
+  reintegro_otros:     'Otros reintegros',
   otro:              'Otro',
 }
 
@@ -68,6 +74,9 @@ const CATEGORIAS_FILTRO = [
   { value: 'impuesto',          label: 'Impuesto' },
   { value: 'debito_automatico', label: 'Débito automático' },
   { value: 'fima',              label: 'FIMA' },
+  { value: 'reintegro_impuestos', label: 'Reintegro impuestos' },
+  { value: 'reintegro_seguros',   label: 'Reintegro seguros' },
+  { value: 'reintegro_otros',     label: 'Otros reintegros' },
   { value: 'otro',              label: 'Otro' },
 ]
 
