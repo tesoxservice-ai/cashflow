@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
 import SaldosIniciales from './components/SaldosIniciales'
+import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,8 @@ const BADGE_CAT = {
   reintegro_impuestos: 'bg-teal-50 text-teal-700',
   reintegro_seguros:   'bg-teal-50 text-teal-700',
   reintegro_otros:     'bg-teal-50 text-teal-700',
+  gasto_proyectado:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
+  venta_proyectada:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
   otro:              'bg-slate-100 text-slate-600',
 }
 const LABEL_CAT = {
@@ -65,6 +68,8 @@ const LABEL_CAT = {
   reintegro_impuestos: 'Reintegro impuestos',
   reintegro_seguros:   'Reintegro seguros',
   reintegro_otros:     'Otros reintegros',
+  gasto_proyectado:  'Gasto proyectado (presupuesto)',
+  venta_proyectada:  'Venta proyectada (sin registrar)',
   otro:              'Otro',
 }
 
@@ -235,6 +240,8 @@ export default function CashFlow() {
   const [obras,       setObras]       = useState([])
   const [rubros,      setRubros]      = useState([])
   const [movimientos, setMovimientos] = useState([])
+  const [presupuestos, setPresupuestos] = useState([])
+  const [ventasProyectadas, setVentasProyectadas] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
   const [cargando,     setCargando]     = useState(true)
   const [actualizando, setActualizando] = useState(false)
@@ -281,6 +288,14 @@ export default function CashFlow() {
       .eq('activo', true)
       .order('nombre')
       .then(({ data }) => setRubros(data ?? []))
+    supabase
+      .from('presupuestos')
+      .select('id, obra_id, rubro_id, periodo, monto')
+      .then(({ data }) => setPresupuestos(data ?? []))
+    supabase
+      .from('ventas_proyectadas')
+      .select('id, obra_id, periodo, monto, registrado')
+      .then(({ data }) => setVentasProyectadas(data ?? []))
   }, [])
 
   const cargarSaldosBase = useCallback(async () => {
@@ -348,10 +363,18 @@ export default function CashFlow() {
 
   useEffect(() => { cargarMovimientos() }, [cargarMovimientos])
 
+  // Movimientos reales + filas virtuales de "gasto proyectado" (lo que del
+  // presupuesto de Operaciones todavía no se facturó). Las virtuales nunca se
+  // guardan en la base: se recalculan cada vez a partir de presupuestos vivos.
+  const movimientosCombinados = useMemo(
+    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, obras, rubros),
+    [movimientos, presupuestos, ventasProyectadas, obras, rubros]
+  )
+
   const { movimientosConSaldo, saldoInicial } = useMemo(() => {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
     let saldoActual = sumaSaldosBase
-    const resultado = movimientos.map(m => {
+    const resultado = movimientosCombinados.map(m => {
       // "No se cumple": el movimiento queda registrado pero no suma/resta
       // en el saldo acumulado (no se borra ni se pierde el dato).
       if (m.estado_proyeccion !== 'no_cumple') {
@@ -361,7 +384,7 @@ export default function CashFlow() {
       return { ...m, saldoAcumulado: saldoActual }
     })
     return { movimientosConSaldo: resultado, saldoInicial: sumaSaldosBase }
-  }, [movimientos, saldosBase])
+  }, [movimientosCombinados, saldosBase])
 
   const cards = useMemo(() => {
     const hoy = hoyISO()
@@ -373,7 +396,7 @@ export default function CashFlow() {
     let saldoHoy = sumaSaldosBase
     // Sin fecha de pago no se puede saber si ya pasó: no entra al saldo de hoy
     // (en la tabla esos movimientos quedan al final, igual que acá).
-    movimientos.forEach(m => {
+    movimientosCombinados.forEach(m => {
       const fecha = m.fecha_pago
       if (!fecha || fecha > hoy) return
       if (m.estado_proyeccion === 'no_cumple') return
@@ -392,7 +415,7 @@ export default function CashFlow() {
     }
 
     return { saldoHoy, pos30: posicionEn(d30), pos60: posicionEn(d60), pos90: posicionEn(d90) }
-  }, [movimientos, movimientosConSaldo, saldosBase])
+  }, [movimientosCombinados, movimientosConSaldo, saldosBase])
 
   const filasFiltradas = useMemo(() => {
     const fechaLimite = fechaFutura(horizonte)
@@ -984,7 +1007,7 @@ function TablaCashFlow({
               return (
                 <tr key={fila.key}
                   className={`border-b border-slate-100 last:border-0 transition-colors
-                    ${saldoNeg ? 'bg-red-50/60' : 'hover:bg-slate-50/60'}`}>
+                    ${m._virtual ? 'bg-slate-50/40' : saldoNeg ? 'bg-red-50/60' : 'hover:bg-slate-50/60'}`}>
                   <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">
                     {fmtFecha(m.fecha_pago)}
                   </td>
@@ -1014,9 +1037,20 @@ function TablaCashFlow({
                     </span>
                   </td>
                   <td className="px-4 py-3 text-slate-700 max-w-[180px]">
-                    <span className="truncate block" title={m.proveedor_cliente ?? m.concepto ?? ''}>
-                      {m.proveedor_cliente ?? m.concepto ?? '—'}
-                    </span>
+                    {m.categoria === 'gasto_proyectado' ? (
+                      <span className="truncate block italic text-slate-500"
+                        title={`Presupuestado: ${fmtARS(m._presupuestado)} — Ya facturado: ${fmtARS(m._gastoReal)}`}>
+                        {m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar
+                      </span>
+                    ) : m.categoria === 'venta_proyectada' ? (
+                      <span className="truncate block italic text-slate-500">
+                        Venta proyectada — todavía sin registrar
+                      </span>
+                    ) : (
+                      <span className="truncate block" title={m.proveedor_cliente ?? m.concepto ?? ''}>
+                        {m.proveedor_cliente ?? m.concepto ?? '—'}
+                      </span>
+                    )}
                     {m.numero_factura && (
                       <span className="text-xs text-slate-400 block">Nº {m.numero_factura}</span>
                     )}
@@ -1026,12 +1060,12 @@ function TablaCashFlow({
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
                     {m.tipo === 'ingreso'
-                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : 'text-emerald-600 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
+                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : m._virtual ? 'text-slate-400 font-semibold' : 'text-emerald-600 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
                       : <span className="text-slate-200 text-xs">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
                     {m.tipo === 'egreso'
-                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : 'text-red-500 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
+                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : m._virtual ? 'text-slate-400 font-semibold' : 'text-red-500 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
                       : <span className="text-slate-200 text-xs">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
@@ -1045,30 +1079,36 @@ function TablaCashFlow({
                     )}
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <div className="flex items-center justify-end gap-3">
-                      <button
-                        onClick={() => onIniciarEdicion(m)}
-                        disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
-                        className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                        style={{ color: '#0e7490' }}
-                      >
-                        Editar
-                      </button>
-                      <button
-                        onClick={() => onIniciarAjuste(m)}
-                        disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
-                        className="text-xs font-semibold text-amber-600 hover:text-amber-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        Ajustar saldo
-                      </button>
-                      <button
-                        onClick={() => onIniciarProyeccion(m)}
-                        disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
-                        className="text-xs font-semibold text-violet-600 hover:text-violet-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        Proyección
-                      </button>
-                    </div>
+                    {m._virtual ? (
+                      <span className="text-xs text-slate-400 italic">
+                        {m.categoria === 'venta_proyectada' ? 'Estimado — ventas Operaciones' : 'Estimado — presupuesto Operaciones'}
+                      </span>
+                    ) : (
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          onClick={() => onIniciarEdicion(m)}
+                          disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
+                          className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                          style={{ color: '#0e7490' }}
+                        >
+                          Editar
+                        </button>
+                        <button
+                          onClick={() => onIniciarAjuste(m)}
+                          disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
+                          className="text-xs font-semibold text-amber-600 hover:text-amber-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          Ajustar saldo
+                        </button>
+                        <button
+                          onClick={() => onIniciarProyeccion(m)}
+                          disabled={filaEditando !== null || filaAjustando !== null || filaProyeccion !== null}
+                          className="text-xs font-semibold text-violet-600 hover:text-violet-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          Proyección
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               )

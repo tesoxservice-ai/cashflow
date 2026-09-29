@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,8 @@ const BADGE_CAT = {
   reintegro_impuestos: 'bg-teal-50 text-teal-700',
   reintegro_seguros:   'bg-teal-50 text-teal-700',
   reintegro_otros:     'bg-teal-50 text-teal-700',
+  gasto_proyectado:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
+  venta_proyectada:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
   otro:              'bg-slate-100 text-slate-600',
 }
 const LABEL_CAT = {
@@ -82,6 +85,8 @@ const LABEL_CAT = {
   reintegro_impuestos: 'Reintegro impuestos',
   reintegro_seguros:   'Reintegro seguros',
   reintegro_otros:     'Otros reintegros',
+  gasto_proyectado:  'Gasto proyectado (presupuesto)',
+  venta_proyectada:  'Venta proyectada (sin registrar)',
   otro:              'Otro',
 }
 const CATEGORIAS_FILTRO = [
@@ -95,6 +100,8 @@ const CATEGORIAS_FILTRO = [
   { value: 'reintegro_impuestos', label: 'Reintegro impuestos' },
   { value: 'reintegro_seguros',   label: 'Reintegro seguros' },
   { value: 'reintegro_otros',     label: 'Otros reintegros' },
+  { value: 'gasto_proyectado',  label: 'Gasto proyectado (presupuesto)' },
+  { value: 'venta_proyectada',  label: 'Venta proyectada (sin registrar)' },
   { value: 'otro',              label: 'Otro' },
 ]
 
@@ -129,6 +136,8 @@ async function cargarDatosExportDirectorio() {
     { data: rubrosData, error: e5 },
     { data: presData,   error: e6 },
     { data: movPeriodo, error: e7 },
+    { data: presTodos,  error: e8 },
+    { data: ventasProy, error: e9 },
   ] = await Promise.all([
     supabase.from('movimientos')
       .select('id,tipo,categoria,proveedor_cliente,numero_factura,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,concepto,estado_proyeccion')
@@ -144,9 +153,11 @@ async function cargarDatosExportDirectorio() {
     supabase.from('movimientos')
       .select('id,tipo,categoria,monto_bruto,obra_id,rubro_id,concepto,proveedor_cliente')
       .eq('periodo', periodo).eq('categoria', 'factura').eq('tipo', 'egreso'),
+    supabase.from('presupuestos').select('id,obra_id,rubro_id,periodo,monto'),
+    supabase.from('ventas_proyectadas').select('id,obra_id,periodo,monto,registrado'),
   ])
 
-  const errs = [e1, e2, e3, e4, e5, e6, e7].filter(Boolean)
+  const errs = [e1, e2, e3, e4, e5, e6, e7, e8, e9].filter(Boolean)
   if (errs.length) throw new Error('No se pudieron cargar los datos para el Excel.')
 
   const obraMap  = {}; (obrasData  ?? []).forEach(o => obraMap[o.id]  = o)
@@ -170,13 +181,20 @@ async function cargarDatosExportDirectorio() {
     }
   })
 
+  // Movimientos reales + filas virtuales de "gasto proyectado" (presupuesto sin
+  // facturar) y "venta proyectada" (venta sin registrar) — ver src/lib/proyeccionPresupuesto.js.
+  const movConProyeccion = combinarConProyeccion(movEnriq, presTodos ?? [], ventasProy ?? [], obrasData ?? [], rubrosData ?? [])
+    .map(m => m._virtual
+      ? { ...m, obraCodigo: m.obras?.codigo ?? '', concepto: m.categoria === 'venta_proyectada' ? 'Venta proyectada — todavía sin registrar' : `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar` }
+      : m)
+
   const sumaSaldosBase = (saldosData ?? []).reduce((mapa, s) => {
     if (!mapa._vistos.has(s.cuenta_id)) { mapa._vistos.add(s.cuenta_id); mapa.total += Number(s.monto ?? 0) }
     return mapa
   }, { total: 0, _vistos: new Set() }).total
 
   let saldo = sumaSaldosBase
-  const movConSaldo = movEnriq.map(m => {
+  const movConSaldo = movConProyeccion.map(m => {
     if (m.estado_proyeccion !== 'no_cumple') {
       saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
     }
@@ -184,7 +202,7 @@ async function cargarDatosExportDirectorio() {
   })
 
   let saldoHoy = sumaSaldosBase
-  movEnriq.forEach(m => {
+  movConProyeccion.forEach(m => {
     const fecha = m.fecha_pago
     if (!fecha || fecha > hoy) return
     if (m.estado_proyeccion === 'no_cumple') return
@@ -216,20 +234,22 @@ async function cargarDatosExportDirectorio() {
     if (!puntoMin || m.saldoAcumulado < puntoMin.saldoAcumulado) puntoMin = m
   })
 
-  // Presupuesto vs Real — todas las obras, mes en curso
+  // Presupuesto vs Real — todas las obras, mes en curso. Se compara por
+  // Obra + Rubro (el concepto que carga Operaciones no participa del
+  // matching, para no fragmentar el mismo rubro en filas que nunca calzan).
   const presMap = {}, gastoMap = {}
   ;(presData ?? []).forEach(p => {
-    const k = `${p.obra_id}|${p.rubro_id}|${p.concepto ?? ''}`
+    const k = `${p.obra_id}|${p.rubro_id}`
     presMap[k] = (presMap[k] ?? 0) + Number(p.monto)
   })
   ;(movPeriodo ?? []).forEach(m => {
-    const k = `${m.obra_id}|${m.rubro_id}|${m.concepto ?? ''}`
+    const k = `${m.obra_id}|${m.rubro_id}`
     gastoMap[k] = (gastoMap[k] ?? 0) + Number(m.monto_bruto)
   })
   const todasClaves = new Set([...Object.keys(presMap), ...Object.keys(gastoMap)])
   const analisisPV = []
   todasClaves.forEach(k => {
-    const [obraId, rubroId, concepto] = k.split('|')
+    const [obraId, rubroId] = k.split('|')
     const presupuestado = presMap[k]  ?? 0
     const gastado       = gastoMap[k] ?? 0
     const diferencia    = presupuestado - gastado
@@ -237,7 +257,7 @@ async function cargarDatosExportDirectorio() {
     const semaforo      = presupuestado === 0 ? 'Sin presupuesto' : pct > 100 ? 'Superado' : pct >= 80 ? 'Atención' : 'OK'
     analisisPV.push({
       obraCodigo: obraMap[obraId]?.codigo ?? '', obraNombre: obraMap[obraId]?.nombre ?? '',
-      rubroNombre: rubroMap[rubroId]?.nombre ?? 'Sin rubro', concepto: concepto ?? '',
+      rubroNombre: rubroMap[rubroId]?.nombre ?? 'Sin rubro',
       presupuestado, gastado, diferencia, pct, semaforo,
     })
   })
@@ -431,7 +451,7 @@ function generarExcelDirectorio(datos) {
       totPresXL += row.presupuestado; totGastXL += row.gastado
       h2.push(xlRow(r, [
         { v: row.obraCodigo, s: sTxt }, { v: row.obraNombre, s: sTxt },
-        { v: row.rubroNombre, s: sTxt }, { v: row.concepto, s: sTxt },
+        { v: row.rubroNombre, s: sTxt }, { v: '', s: sTxt },
         { v: row.presupuestado, s: sNum, n: true }, { v: row.gastado, s: sNum, n: true },
         { v: row.diferencia, s: row.diferencia >= 0 ? S.numVerde : S.numRojo, n: true },
         { v: row.presupuestado > 0 ? row.pct / 100 : 0, s: S.pct, n: true },
@@ -727,6 +747,10 @@ function TabButton({ activo, onClick, children }) {
 // ══════════════════════════════════════════════════════════════
 function TabCashFlow() {
   const [cuentas,     setCuentas]     = useState([])
+  const [obras,       setObras]       = useState([])
+  const [rubros,      setRubros]      = useState([])
+  const [presupuestos, setPresupuestos] = useState([])
+  const [ventasProyectadas, setVentasProyectadas] = useState([])
   const [movimientos, setMovimientos] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
   const [cargando,     setCargando]     = useState(true)
@@ -747,6 +771,14 @@ function TabCashFlow() {
   useEffect(() => {
     supabase.from('cuentas').select('id, nombre, tipo, activa').eq('activa', true).order('nombre')
       .then(({ data }) => setCuentas(data ?? []))
+    supabase.from('obras').select('id, codigo, nombre, activa').eq('activa', true).order('codigo')
+      .then(({ data }) => setObras(data ?? []))
+    supabase.from('rubros').select('id, nombre, tipo, activo').eq('activo', true).order('nombre')
+      .then(({ data }) => setRubros(data ?? []))
+    supabase.from('presupuestos').select('id, obra_id, rubro_id, periodo, monto')
+      .then(({ data }) => setPresupuestos(data ?? []))
+    supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado')
+      .then(({ data }) => setVentasProyectadas(data ?? []))
   }, [])
 
   useEffect(() => {
@@ -768,9 +800,10 @@ function TabCashFlow() {
       .select(`
         id, tipo, categoria, proveedor_cliente, numero_factura,
         monto_bruto, monto_neto, concepto,
-        periodo, fecha_pago, estado, cuenta_id, created_at,
+        periodo, fecha_pago, estado, cuenta_id, obra_id, rubro_id, created_at,
         estado_proyeccion, fecha_pago_original,
         obras   ( id, codigo, nombre ),
+        rubros  ( id, nombre ),
         cuentas ( id, nombre )
       `)
       .order('fecha_pago', { ascending: true, nullsFirst: false })
@@ -844,10 +877,18 @@ function TabCashFlow() {
     await cargarMovimientos({ silencioso: true })
   }
 
+  // Movimientos reales + filas virtuales de "gasto proyectado" (lo que del
+  // presupuesto de Operaciones todavía no se facturó). Las virtuales nunca se
+  // guardan en la base: se recalculan cada vez a partir de presupuestos vivos.
+  const movimientosCombinados = useMemo(
+    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, obras, rubros),
+    [movimientos, presupuestos, ventasProyectadas, obras, rubros]
+  )
+
   const { movimientosConSaldo } = useMemo(() => {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
     let saldoActual = sumaSaldosBase
-    const resultado = movimientos.map(m => {
+    const resultado = movimientosCombinados.map(m => {
       if (m.estado_proyeccion !== 'no_cumple') {
         if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
         else                      saldoActual -= m.montoEfectivo
@@ -855,7 +896,7 @@ function TabCashFlow() {
       return { ...m, saldoAcumulado: saldoActual }
     })
     return { movimientosConSaldo: resultado }
-  }, [movimientos, saldosBase])
+  }, [movimientosCombinados, saldosBase])
 
   const cards = useMemo(() => {
     const hoy = hoyISO()
@@ -865,7 +906,7 @@ function TabCashFlow() {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
 
     let saldoHoy = sumaSaldosBase
-    movimientos.forEach(m => {
+    movimientosCombinados.forEach(m => {
       const fecha = m.fecha_pago
       if (!fecha || fecha > hoy) return
       if (m.estado_proyeccion === 'no_cumple') return
@@ -884,7 +925,7 @@ function TabCashFlow() {
     }
 
     return { saldoHoy, pos30: posicionEn(d30), pos60: posicionEn(d60), pos90: posicionEn(d90) }
-  }, [movimientos, movimientosConSaldo, saldosBase])
+  }, [movimientosCombinados, movimientosConSaldo, saldosBase])
 
   // El directorio solo ve de hoy en adelante: se fuerza el piso de fecha.
   const filasFiltradas = useMemo(() => {
@@ -1074,7 +1115,7 @@ function TabCashFlow() {
                   }
 
                   return (
-                    <tr key={m.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 transition-colors">
+                    <tr key={m.id} className={`border-b border-slate-100 last:border-0 transition-colors ${m._virtual ? 'bg-slate-50/40' : 'hover:bg-slate-50/60'}`}>
                       <td className="px-4 py-3 text-slate-600 whitespace-nowrap text-xs">{fmtFecha(m.fecha_pago)}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${BADGE_CAT[m.categoria] ?? 'bg-slate-100 text-slate-600'}`}>
@@ -1093,27 +1134,42 @@ function TabCashFlow() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-slate-700 max-w-[200px] truncate">
-                        {m.proveedor_cliente ?? m.concepto ?? '—'}
+                        {m.categoria === 'gasto_proyectado' ? (
+                          <span className="italic text-slate-500"
+                            title={`Presupuestado: ${fmtARS(m._presupuestado)} — Ya facturado: ${fmtARS(m._gastoReal)}`}>
+                            {m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar
+                          </span>
+                        ) : m.categoria === 'venta_proyectada' ? (
+                          <span className="italic text-slate-500">Venta proyectada — todavía sin registrar</span>
+                        ) : (
+                          m.proveedor_cliente ?? m.concepto ?? '—'
+                        )}
                         {m.numero_factura && <span className="block text-xs text-slate-400">Nº {m.numero_factura}</span>}
                       </td>
                       <td className="px-4 py-3 text-slate-600 text-xs whitespace-nowrap">{m.obras?.codigo ?? '—'}</td>
-                      <td className="px-4 py-3 text-right tabular-nums text-emerald-600 whitespace-nowrap">
+                      <td className={`px-4 py-3 text-right tabular-nums whitespace-nowrap ${m._virtual ? 'text-slate-400' : 'text-emerald-600'}`}>
                         {esIngreso ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 line-through' : ''}>{fmtARS(m.montoEfectivo)}</span> : '—'}
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums text-red-600 whitespace-nowrap">
-                        {!esIngreso ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 line-through' : ''}>{fmtARS(m.montoEfectivo)}</span> : '—'}
+                        {!esIngreso ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 line-through' : m._virtual ? 'text-slate-400' : ''}>{fmtARS(m.montoEfectivo)}</span> : '—'}
                       </td>
                       <td className={`px-4 py-3 text-right tabular-nums font-semibold whitespace-nowrap ${m.saldoAcumulado >= 0 ? 'text-slate-800' : 'text-red-600'}`}>
                         {fmtARS(m.saldoAcumulado)}
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <button
-                          onClick={() => handleIniciarProyeccion(m)}
-                          disabled={filaProyeccion !== null}
-                          className="text-xs font-semibold text-violet-600 hover:text-violet-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                          Proyección
-                        </button>
+                        {m._virtual ? (
+                          <span className="text-xs text-slate-400 italic">
+                            {m.categoria === 'venta_proyectada' ? 'Estimado — ventas Operaciones' : 'Estimado — presupuesto Operaciones'}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleIniciarProyeccion(m)}
+                            disabled={filaProyeccion !== null}
+                            className="text-xs font-semibold text-violet-600 hover:text-violet-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                          >
+                            Proyección
+                          </button>
+                        )}
                       </td>
                     </tr>
                   )
@@ -1192,42 +1248,29 @@ function TabPresupuesto() {
 
   useEffect(() => { cargarAnalisis() }, [cargarAnalisis])
 
+  // El matching de una factura real contra el presupuesto es por Obra + Rubro
+  // + Período (el concepto que se tipea al cargar la factura es texto libre y
+  // casi nunca coincide con el del presupuesto, así que no participa del
+  // matching — antes eso generaba dos filas separadas para el mismo rubro).
   const analisisPeriodo = useMemo(() => {
     if (!obraId || modoTodos) return null
     const rubroNombre = id => rubros.find(r => r.id === id)?.nombre ?? 'Sin rubro'
-    const presPorRubroConcepto = {}
-    presupuestos.forEach(p => {
-      const c = p.concepto ?? ''
-      if (!presPorRubroConcepto[p.rubro_id]) presPorRubroConcepto[p.rubro_id] = {}
-      presPorRubroConcepto[p.rubro_id][c] = (presPorRubroConcepto[p.rubro_id][c] ?? 0) + Number(p.monto)
-    })
-    const gastoPorRubroConcepto = {}; const movSinPresupuesto = []
-    movimientos.forEach(m => {
-      if (!m.rubro_id) return
-      const c = m.concepto ?? m.proveedor_cliente ?? ''
-      if (!gastoPorRubroConcepto[m.rubro_id]) gastoPorRubroConcepto[m.rubro_id] = {}
-      gastoPorRubroConcepto[m.rubro_id][c] = (gastoPorRubroConcepto[m.rubro_id][c] ?? 0) + Number(m.monto_bruto)
-    })
-    const rubrosInv = new Set([...Object.keys(presPorRubroConcepto), ...Object.keys(gastoPorRubroConcepto)])
+    const presPorRubro = {}
+    presupuestos.forEach(p => { presPorRubro[p.rubro_id] = (presPorRubro[p.rubro_id] ?? 0) + Number(p.monto) })
+    const gastoPorRubro = {}
+    movimientos.forEach(m => { if (!m.rubro_id) return; gastoPorRubro[m.rubro_id] = (gastoPorRubro[m.rubro_id] ?? 0) + Number(m.monto_bruto) })
+    const rubrosInv = new Set([...Object.keys(presPorRubro), ...Object.keys(gastoPorRubro)])
+    const movSinPresupuesto = []
     const grupos = []
     rubrosInv.forEach(rubroId => {
-      const conceptos = [...new Set([...Object.keys(presPorRubroConcepto[rubroId] ?? {}), ...Object.keys(gastoPorRubroConcepto[rubroId] ?? {})])]
-      const filas = conceptos.map(concepto => {
-        const presupuestado = presPorRubroConcepto[rubroId]?.[concepto] ?? 0
-        const gastado = gastoPorRubroConcepto[rubroId]?.[concepto] ?? 0
-        const diferencia = presupuestado - gastado
-        const pct = presupuestado > 0 ? (gastado / presupuestado) * 100 : 0
-        const sinPresupuesto = presupuestado === 0
-        if (sinPresupuesto && gastado > 0)
-          movimientos.filter(m => m.rubro_id === rubroId && (m.concepto ?? m.proveedor_cliente ?? '') === concepto)
-            .forEach(m => movSinPresupuesto.push({ ...m, rubroNombre: rubroNombre(rubroId) }))
-        return { concepto, presupuestado, gastado, diferencia, pct, sinPresupuesto }
-      })
-      const subtotalPres = filas.reduce((s, f) => s + f.presupuestado, 0)
-      const subtotalGast = filas.reduce((s, f) => s + f.gastado, 0)
-      const subtotalDif = subtotalPres - subtotalGast
-      const subtotalPct = subtotalPres > 0 ? (subtotalGast / subtotalPres) * 100 : 0
-      grupos.push({ rubroId, rubroNombre: rubroNombre(rubroId), filas, subtotalPres, subtotalGast, subtotalDif, subtotalPct, sinPresupuesto: subtotalPres === 0 })
+      const subtotalPres = presPorRubro[rubroId] ?? 0
+      const subtotalGast = gastoPorRubro[rubroId] ?? 0
+      const subtotalDif  = subtotalPres - subtotalGast
+      const subtotalPct  = subtotalPres > 0 ? (subtotalGast / subtotalPres) * 100 : 0
+      const sinPresupuesto = subtotalPres === 0
+      if (sinPresupuesto && subtotalGast > 0)
+        movimientos.filter(m => m.rubro_id === rubroId).forEach(m => movSinPresupuesto.push({ ...m, rubroNombre: rubroNombre(rubroId) }))
+      grupos.push({ rubroId, rubroNombre: rubroNombre(rubroId), subtotalPres, subtotalGast, subtotalDif, subtotalPct, sinPresupuesto })
     })
     grupos.sort((a, b) => a.rubroNombre.localeCompare(b.rubroNombre, 'es'))
     const totalPres = grupos.reduce((s, g) => s + g.subtotalPres, 0)
@@ -1336,7 +1379,6 @@ function TabPresupuesto() {
                   <tr className="border-b border-slate-100 bg-slate-50/80">
                     {modoTodos && <Th>{/* chevron */}</Th>}
                     <Th>Rubro</Th>
-                    {!modoTodos && <Th>Concepto</Th>}
                     <Th align="right">Presupuestado</Th>
                     <Th align="right">Gastado real</Th>
                     <Th align="right">Diferencia</Th>
@@ -1352,7 +1394,7 @@ function TabPresupuesto() {
                 <tfoot>
                   <tr style={{ backgroundColor: '#e0f2fe' }} className="border-t-2 border-cyan-100">
                     {modoTodos && <td />}
-                    <td colSpan={modoTodos ? 1 : 2} className="px-5 py-3.5 text-sm font-bold" style={{ color: '#0e7490' }}>Total general</td>
+                    <td className="px-5 py-3.5 text-sm font-bold" style={{ color: '#0e7490' }}>Total general</td>
                     <td className="px-5 py-3.5 text-right font-bold tabular-nums" style={{ color: '#0e7490' }}>{fmtARS(analisis.totalPres)}</td>
                     <td className={`px-5 py-3.5 text-right font-bold tabular-nums ${analisis.totalPct > 100 ? 'text-red-700' : ''}`}
                       style={analisis.totalPct <= 100 ? { color: '#0e7490' } : {}}>{fmtARS(analisis.totalGast)}</td>
@@ -1378,34 +1420,18 @@ function TabPresupuesto() {
 function GrupoRubroPeriodo({ grupo }) {
   const superado = grupo.subtotalPct > 100 && grupo.subtotalPres > 0
   return (
-    <>
-      {grupo.filas.map((fila, i) => {
-        const filaSuperada = fila.pct > 100 && !fila.sinPresupuesto
-        return (
-          <tr key={`${grupo.rubroId}-${fila.concepto}-${i}`}
-            className={`border-b border-slate-100 transition-colors ${filaSuperada ? 'bg-red-50' : 'hover:bg-slate-50/60'}`}>
-            <td className="px-5 py-3 text-xs align-top">{i === 0 ? <span className="font-semibold text-slate-800">{grupo.rubroNombre}</span> : null}</td>
-            <td className="px-5 py-3 text-slate-600 text-xs">
-              <div className="flex items-center gap-2">
-                <PuntoSemaforo pct={fila.pct} sinPresupuesto={fila.sinPresupuesto} />
-                <span>{fila.concepto || <span className="text-slate-400 italic">Sin concepto</span>}</span>
-              </div>
-            </td>
-            <td className="px-5 py-3 text-right tabular-nums text-slate-600 text-xs">{fila.presupuestado > 0 ? fmtARS(fila.presupuestado) : <span className="text-slate-300">—</span>}</td>
-            <td className={`px-5 py-3 text-right tabular-nums text-xs font-medium ${filaSuperada ? 'text-red-700' : 'text-slate-600'}`}>{fila.gastado > 0 ? fmtARS(fila.gastado) : <span className="text-slate-300">—</span>}</td>
-            <td className={`px-5 py-3 text-right tabular-nums text-xs ${fila.sinPresupuesto ? 'text-slate-400' : fila.diferencia >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{fila.sinPresupuesto ? '—' : fmtARS(fila.diferencia)}</td>
-            <td className="px-5 py-3"><BarraProgreso pct={fila.pct} sinPresupuesto={fila.sinPresupuesto} /></td>
-          </tr>
-        )
-      })}
-      <tr style={{ backgroundColor: superado ? undefined : '#f0f9ff' }} className={`border-b border-slate-200 ${superado ? 'bg-red-50' : ''}`}>
-        <td className="px-5 py-2.5 text-xs font-bold" colSpan={2} style={{ color: '#0e7490' }}>Subtotal {grupo.rubroNombre}</td>
-        <td className="px-5 py-2.5 text-right tabular-nums text-xs font-bold" style={{ color: '#0e7490' }}>{grupo.subtotalPres > 0 ? fmtARS(grupo.subtotalPres) : <span className="text-slate-400 font-normal">—</span>}</td>
-        <td className={`px-5 py-2.5 text-right tabular-nums text-xs font-bold ${superado ? 'text-red-700' : ''}`} style={!superado ? { color: '#0e7490' } : {}}>{grupo.subtotalGast > 0 ? fmtARS(grupo.subtotalGast) : <span className="text-slate-400 font-normal">—</span>}</td>
-        <td className={`px-5 py-2.5 text-right tabular-nums text-xs font-bold ${grupo.sinPresupuesto ? 'text-slate-400' : grupo.subtotalDif >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{grupo.sinPresupuesto ? '—' : fmtARS(grupo.subtotalDif)}</td>
-        <td className="px-5 py-2.5"><BarraProgreso pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} /></td>
-      </tr>
-    </>
+    <tr className={`border-b border-slate-100 transition-colors ${superado ? 'bg-red-50' : 'hover:bg-slate-50/60'}`}>
+      <td className="px-5 py-3 text-xs">
+        <div className="flex items-center gap-2">
+          <PuntoSemaforo pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} />
+          <span className="font-semibold text-slate-800">{grupo.rubroNombre}</span>
+        </div>
+      </td>
+      <td className="px-5 py-3 text-right tabular-nums text-slate-600 text-xs">{grupo.subtotalPres > 0 ? fmtARS(grupo.subtotalPres) : <span className="text-slate-300">—</span>}</td>
+      <td className={`px-5 py-3 text-right tabular-nums text-xs font-medium ${superado ? 'text-red-700' : 'text-slate-600'}`}>{grupo.subtotalGast > 0 ? fmtARS(grupo.subtotalGast) : <span className="text-slate-300">—</span>}</td>
+      <td className={`px-5 py-3 text-right tabular-nums text-xs ${grupo.sinPresupuesto ? 'text-slate-400' : grupo.subtotalDif >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{grupo.sinPresupuesto ? '—' : fmtARS(grupo.subtotalDif)}</td>
+      <td className="px-5 py-3"><BarraProgreso pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} /></td>
+    </tr>
   )
 }
 

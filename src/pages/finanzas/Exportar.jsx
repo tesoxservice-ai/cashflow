@@ -15,6 +15,7 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '../../supabaseClient'
 import Navbar from '../../components/Navbar'
+import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
 
 // ═══════════════════════════════════════════════════════════════
 // PALETA PDF
@@ -108,6 +109,8 @@ async function cargarDatos(periodo) {
     { data: obrasData,  error: e6 },
     { data: rubrosData, error: e7 },
     { data: movPeriodo, error: e8 },
+    { data: presTodosData, error: e9 },
+    { data: ventasProyData, error: e10 },
   ] = await Promise.all([
     supabase.from('movimientos')
       .select('id,tipo,categoria,proveedor_cliente,numero_factura,forma_pago,numero_op,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,cuenta_id,concepto,observaciones,created_at,estado_proyeccion,fecha_pago_original')
@@ -125,9 +128,11 @@ async function cargarDatos(periodo) {
     supabase.from('movimientos')
       .select('id,tipo,categoria,monto_bruto,obra_id,rubro_id,concepto,proveedor_cliente')
       .eq('periodo', periodo).eq('categoria', 'factura').eq('tipo', 'egreso'),
+    supabase.from('presupuestos').select('id,obra_id,rubro_id,periodo,monto'),
+    supabase.from('ventas_proyectadas').select('id,obra_id,periodo,monto,registrado'),
   ])
 
-  const errs = [e1,e2,e3,e4,e5,e6,e7,e8].filter(Boolean)
+  const errs = [e1,e2,e3,e4,e5,e6,e7,e8,e9,e10].filter(Boolean)
   if (errs.length) throw new Error('Error al cargar datos de Supabase.')
 
   const obraMap  = {}; (obrasData  ?? []).forEach(o => obraMap[o.id]  = o)
@@ -156,9 +161,24 @@ async function cargarDatos(periodo) {
     }
   })
 
+  // Movimientos reales + filas virtuales de "gasto proyectado" (presupuesto sin
+  // facturar) y "venta proyectada" (venta sin registrar) — ver src/lib/proyeccionPresupuesto.js.
+  const movConProyeccion = combinarConProyeccion(movEnriq, presTodosData ?? [], ventasProyData ?? [], obrasData ?? [], rubrosData ?? [])
+    .map(m => m._virtual
+      ? {
+          ...m,
+          obraCodigo:  m.obras?.codigo ?? '',
+          obraNombre:  m.obras?.nombre ?? '',
+          rubroNombre: m.rubros?.nombre ?? '',
+          concepto: m.categoria === 'venta_proyectada'
+            ? 'Venta proyectada — todavía sin registrar'
+            : `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar`,
+        }
+      : m)
+
   const sumaSaldosBase = Object.values(saldosPorCuenta).reduce((acc,s) => acc + Number(s.monto ?? 0), 0)
   let saldo = sumaSaldosBase
-  const movConSaldo = movEnriq.map(m => {
+  const movConSaldo = movConProyeccion.map(m => {
     if (m.estado_proyeccion !== 'no_cumple') {
       saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
     }
@@ -166,7 +186,7 @@ async function cargarDatos(periodo) {
   })
 
   let saldoDisponible = sumaSaldosBase, ingresosProyect = 0, egresosProyect = 0
-  movEnriq.forEach(m => {
+  movConProyeccion.forEach(m => {
     if (m.estado_proyeccion === 'no_cumple') return
     const fecha = m.fecha_pago ?? m.periodo
     if (m.estado === 'ejecutado' && (!fecha || fecha <= hoy)) {
@@ -178,20 +198,24 @@ async function cargarDatos(periodo) {
     }
   })
 
+  // Se compara por Obra + Rubro (el concepto que carga Operaciones es texto
+  // libre y casi nunca coincide con el de la factura real, así que no
+  // participa del matching — antes eso generaba filas separadas para el
+  // mismo rubro).
   const presMap = {}, gastoMap = {}
   ;(presData ?? []).forEach(p => {
-    const k = `${p.obra_id}|${p.rubro_id}|${p.concepto ?? ''}`
+    const k = `${p.obra_id}|${p.rubro_id}`
     presMap[k] = (presMap[k] ?? 0) + Number(p.monto)
   })
   ;(movPeriodo ?? []).forEach(m => {
-    const k = `${m.obra_id}|${m.rubro_id}|${m.concepto ?? ''}`
+    const k = `${m.obra_id}|${m.rubro_id}`
     gastoMap[k] = (gastoMap[k] ?? 0) + Number(m.monto_bruto)
   })
 
   const todasClaves = new Set([...Object.keys(presMap), ...Object.keys(gastoMap)])
   const analisisPV = []
   todasClaves.forEach(k => {
-    const [obraId, rubroId, concepto] = k.split('|')
+    const [obraId, rubroId] = k.split('|')
     const presupuestado = presMap[k]  ?? 0
     const gastado       = gastoMap[k] ?? 0
     const diferencia    = presupuestado - gastado
@@ -199,7 +223,7 @@ async function cargarDatos(periodo) {
     const semaforo      = presupuestado === 0 ? 'Sin presupuesto' : pct > 100 ? 'Superado' : pct >= 80 ? 'Atención' : 'OK'
     analisisPV.push({
       obraCodigo: obraMap[obraId]?.codigo ?? '', obraNombre: obraMap[obraId]?.nombre ?? '',
-      rubroNombre: rubroMap[rubroId]?.nombre ?? '', concepto: concepto ?? '',
+      rubroNombre: rubroMap[rubroId]?.nombre ?? '',
       presupuestado, gastado, diferencia, pct, semaforo,
     })
   })
@@ -347,7 +371,7 @@ async function generarPDF(periodo, datos) {
       const bg = colorSem[r.semaforo] ?? C.blanco
       rowsPVR.push([
         { content: r.obraCodigo, styles: { fillColor: bg, fontSize: 7.5 } }, { content: r.obraNombre, styles: { fillColor: bg, fontSize: 7.5 } },
-        { content: r.rubroNombre, styles: { fillColor: bg, fontSize: 7.5 } }, { content: r.concepto, styles: { fillColor: bg, fontSize: 7.5 } },
+        { content: r.rubroNombre, styles: { fillColor: bg, fontSize: 7.5 } }, { content: '', styles: { fillColor: bg, fontSize: 7.5 } },
         { content: fmtARS(r.presupuestado), styles: { fillColor: bg, halign: 'right', fontSize: 7.5 } },
         { content: fmtARS(r.gastado), styles: { fillColor: bg, halign: 'right', fontSize: 7.5 } },
         { content: fmtARS(r.diferencia), styles: { fillColor: bg, halign: 'right', fontSize: 7.5, textColor: r.diferencia >= 0 ? C.verde : C.rojo } },
@@ -398,7 +422,7 @@ async function generarPDF(periodo, datos) {
       const bg = colorSem[r.semaforo] ?? C.blanco
       return [
         { content: r.obraCodigo, styles: { fillColor: bg, fontSize: 7.5 } }, { content: r.obraNombre, styles: { fillColor: bg, fontSize: 7.5 } },
-        { content: r.rubroNombre, styles: { fillColor: bg, fontSize: 7.5 } }, { content: r.concepto, styles: { fillColor: bg, fontSize: 7.5 } },
+        { content: r.rubroNombre, styles: { fillColor: bg, fontSize: 7.5 } }, { content: '', styles: { fillColor: bg, fontSize: 7.5 } },
         { content: fmtARS(r.presupuestado), styles: { fillColor: bg, halign: 'right', fontSize: 7.5 } },
         { content: fmtARS(r.gastado), styles: { fillColor: bg, halign: 'right', fontSize: 7.5 } },
         { content: fmtARS(r.diferencia), styles: { fillColor: bg, halign: 'right', fontSize: 7.5, textColor: r.diferencia >= 0 ? C.verde : C.rojo } },
@@ -790,7 +814,7 @@ async function generarExcel(periodo, datos, periodoLabel) {
       totPresXL += row.presupuestado; totGastXL += row.gastado
       hoja4Rows.push(xlRow(r, [
         { v: row.obraCodigo,  s: sTxt }, { v: row.obraNombre, s: sTxt },
-        { v: row.rubroNombre, s: sTxt }, { v: row.concepto,   s: sTxt },
+        { v: row.rubroNombre, s: sTxt }, { v: '',             s: sTxt },
         { v: row.presupuestado, s: sNum, n: true },
         { v: row.gastado,       s: sNum, n: true },
         { v: row.diferencia,    s: row.diferencia >= 0 ? S.numVerde : S.numRojo, n: true },
@@ -853,7 +877,7 @@ async function generarExcel(periodo, datos, periodoLabel) {
       const sNum = numSemXL[row.semaforo]   ?? S.num
       hoja5Rows.push(xlRow(r, [
         { v: row.obraCodigo,  s: sTxt }, { v: row.obraNombre, s: sTxt },
-        { v: row.rubroNombre, s: sTxt }, { v: row.concepto,   s: sTxt },
+        { v: row.rubroNombre, s: sTxt }, { v: '',             s: sTxt },
         { v: row.presupuestado, s: sNum, n: true }, { v: row.gastado, s: sNum, n: true },
         { v: row.diferencia, s: row.diferencia >= 0 ? S.numVerde : S.numRojo, n: true },
         { v: row.presupuestado > 0 ? row.pct / 100 : 0, s: S.pct, n: true },

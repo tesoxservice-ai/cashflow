@@ -178,42 +178,29 @@ export default function PresupuestoVsRealOperaciones() {
 
   useEffect(() => { cargarAnalisis() }, [cargarAnalisis])
 
+  // El matching de una factura real contra el presupuesto es por Obra + Rubro
+  // + Período (el concepto que se tipea al cargar la factura es texto libre y
+  // casi nunca coincide con el del presupuesto, así que no participa del
+  // matching — antes eso generaba dos filas separadas para el mismo rubro).
   const analisisPeriodo = useMemo(() => {
     if (!obraId || modoTodos) return null
     const rubroNombre = id => rubros.find(r => r.id === id)?.nombre ?? 'Sin rubro'
-    const presPorRubroConcepto = {}
-    presupuestos.forEach(p => {
-      const c = p.concepto ?? ''
-      if (!presPorRubroConcepto[p.rubro_id]) presPorRubroConcepto[p.rubro_id] = {}
-      presPorRubroConcepto[p.rubro_id][c] = (presPorRubroConcepto[p.rubro_id][c] ?? 0) + Number(p.monto)
-    })
-    const gastoPorRubroConcepto = {}; const movSinPresupuesto = []
-    movimientos.forEach(m => {
-      if (!m.rubro_id) return
-      const c = m.concepto ?? m.proveedor_cliente ?? ''
-      if (!gastoPorRubroConcepto[m.rubro_id]) gastoPorRubroConcepto[m.rubro_id] = {}
-      gastoPorRubroConcepto[m.rubro_id][c] = (gastoPorRubroConcepto[m.rubro_id][c] ?? 0) + Number(m.monto_bruto)
-    })
-    const rubrosInv = new Set([...Object.keys(presPorRubroConcepto), ...Object.keys(gastoPorRubroConcepto)])
+    const presPorRubro = {}
+    presupuestos.forEach(p => { presPorRubro[p.rubro_id] = (presPorRubro[p.rubro_id] ?? 0) + Number(p.monto) })
+    const gastoPorRubro = {}
+    movimientos.forEach(m => { if (!m.rubro_id) return; gastoPorRubro[m.rubro_id] = (gastoPorRubro[m.rubro_id] ?? 0) + Number(m.monto_bruto) })
+    const rubrosInv = new Set([...Object.keys(presPorRubro), ...Object.keys(gastoPorRubro)])
+    const movSinPresupuesto = []
     const grupos = []
     rubrosInv.forEach(rubroId => {
-      const conceptos = [...new Set([...Object.keys(presPorRubroConcepto[rubroId] ?? {}), ...Object.keys(gastoPorRubroConcepto[rubroId] ?? {})])]
-      const filas = conceptos.map(concepto => {
-        const presupuestado = presPorRubroConcepto[rubroId]?.[concepto] ?? 0
-        const gastado       = gastoPorRubroConcepto[rubroId]?.[concepto] ?? 0
-        const diferencia    = presupuestado - gastado
-        const pct           = presupuestado > 0 ? (gastado / presupuestado) * 100 : 0
-        const sinPresupuesto = presupuestado === 0
-        if (sinPresupuesto && gastado > 0)
-          movimientos.filter(m => m.rubro_id === rubroId && (m.concepto ?? m.proveedor_cliente ?? '') === concepto)
-            .forEach(m => movSinPresupuesto.push({ ...m, rubroNombre: rubroNombre(rubroId) }))
-        return { concepto, presupuestado, gastado, diferencia, pct, sinPresupuesto }
-      })
-      const subtotalPres = filas.reduce((s, f) => s + f.presupuestado, 0)
-      const subtotalGast = filas.reduce((s, f) => s + f.gastado, 0)
+      const subtotalPres = presPorRubro[rubroId] ?? 0
+      const subtotalGast = gastoPorRubro[rubroId] ?? 0
       const subtotalDif  = subtotalPres - subtotalGast
       const subtotalPct  = subtotalPres > 0 ? (subtotalGast / subtotalPres) * 100 : 0
-      grupos.push({ rubroId, rubroNombre: rubroNombre(rubroId), filas, subtotalPres, subtotalGast, subtotalDif, subtotalPct, sinPresupuesto: subtotalPres === 0 })
+      const sinPresupuesto = subtotalPres === 0
+      if (sinPresupuesto && subtotalGast > 0)
+        movimientos.filter(m => m.rubro_id === rubroId).forEach(m => movSinPresupuesto.push({ ...m, rubroNombre: rubroNombre(rubroId) }))
+      grupos.push({ rubroId, rubroNombre: rubroNombre(rubroId), subtotalPres, subtotalGast, subtotalDif, subtotalPct, sinPresupuesto })
     })
     grupos.sort((a, b) => a.rubroNombre.localeCompare(b.rubroNombre, 'es'))
     const totalPres = grupos.reduce((s, g) => s + g.subtotalPres, 0)
@@ -350,7 +337,6 @@ export default function PresupuestoVsRealOperaciones() {
                     <tr className="border-b border-slate-100 bg-slate-50/80">
                       {modoTodos && <Th>{/* chevron */}</Th>}
                       <Th>Rubro</Th>
-                      {!modoTodos && <Th>Concepto</Th>}
                       <Th align="right">Presupuestado</Th>
                       <Th align="right">Gastado real</Th>
                       <Th align="right">Diferencia</Th>
@@ -371,7 +357,7 @@ export default function PresupuestoVsRealOperaciones() {
                   <tfoot>
                     <tr style={{ backgroundColor: '#e0f2fe' }} className="border-t-2 border-cyan-100">
                       {modoTodos && <td />}
-                      <td colSpan={modoTodos ? 1 : 2} className="px-5 py-3.5 text-sm font-bold" style={{ color: '#0e7490' }}>Total general</td>
+                      <td className="px-5 py-3.5 text-sm font-bold" style={{ color: '#0e7490' }}>Total general</td>
                       <td className="px-5 py-3.5 text-right font-bold tabular-nums" style={{ color: '#0e7490' }}>{fmtARS(analisis.totalPres)}</td>
                       <td className={`px-5 py-3.5 text-right font-bold tabular-nums ${analisis.totalPct > 100 ? 'text-red-700' : ''}`}
                         style={analisis.totalPct <= 100 ? { color: '#0e7490' } : {}}>{fmtARS(analisis.totalGast)}</td>
@@ -400,49 +386,24 @@ export default function PresupuestoVsRealOperaciones() {
 function GrupoRubroPeriodo({ grupo }) {
   const superado = grupo.subtotalPct > 100 && grupo.subtotalPres > 0
   return (
-    <>
-      {grupo.filas.map((fila, i) => {
-        const filaSuperada = fila.pct > 100 && !fila.sinPresupuesto
-        return (
-          <tr key={`${grupo.rubroId}-${fila.concepto}-${i}`}
-            className={`border-b border-slate-100 transition-colors ${filaSuperada ? 'bg-red-50' : 'hover:bg-slate-50/60'}`}>
-            <td className="px-5 py-3 text-slate-700 text-xs align-top">
-              {i === 0 ? <span className="font-semibold text-slate-800">{grupo.rubroNombre}</span> : null}
-            </td>
-            <td className="px-5 py-3 text-slate-600 text-xs">
-              <div className="flex items-center gap-2">
-                <PuntoSemaforo pct={fila.pct} sinPresupuesto={fila.sinPresupuesto} />
-                <span>{fila.concepto || <span className="text-slate-400 italic">Sin concepto</span>}</span>
-              </div>
-            </td>
-            <td className="px-5 py-3 text-right tabular-nums text-slate-600 text-xs">
-              {fila.presupuestado > 0 ? fmtARS(fila.presupuestado) : <span className="text-slate-300">—</span>}
-            </td>
-            <td className={`px-5 py-3 text-right tabular-nums text-xs font-medium ${filaSuperada ? 'text-red-700' : 'text-slate-600'}`}>
-              {fila.gastado > 0 ? fmtARS(fila.gastado) : <span className="text-slate-300">—</span>}
-            </td>
-            <td className={`px-5 py-3 text-right tabular-nums text-xs ${fila.sinPresupuesto ? 'text-slate-400' : fila.diferencia >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-              {fila.sinPresupuesto ? '—' : fmtARS(fila.diferencia)}
-            </td>
-            <td className="px-5 py-3"><BarraProgreso pct={fila.pct} sinPresupuesto={fila.sinPresupuesto} /></td>
-          </tr>
-        )
-      })}
-      <tr style={{ backgroundColor: superado ? undefined : '#f0f9ff' }} className={`border-b border-slate-200 ${superado ? 'bg-red-50' : ''}`}>
-        <td className="px-5 py-2.5 text-xs font-bold" colSpan={2} style={{ color: '#0e7490' }}>Subtotal {grupo.rubroNombre}</td>
-        <td className="px-5 py-2.5 text-right tabular-nums text-xs font-bold" style={{ color: '#0e7490' }}>
-          {grupo.subtotalPres > 0 ? fmtARS(grupo.subtotalPres) : <span className="text-slate-400 font-normal">—</span>}
-        </td>
-        <td className={`px-5 py-2.5 text-right tabular-nums text-xs font-bold ${superado ? 'text-red-700' : ''}`}
-          style={!superado ? { color: '#0e7490' } : {}}>
-          {grupo.subtotalGast > 0 ? fmtARS(grupo.subtotalGast) : <span className="text-slate-400 font-normal">—</span>}
-        </td>
-        <td className={`px-5 py-2.5 text-right tabular-nums text-xs font-bold ${grupo.sinPresupuesto ? 'text-slate-400' : grupo.subtotalDif >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-          {grupo.sinPresupuesto ? '—' : fmtARS(grupo.subtotalDif)}
-        </td>
-        <td className="px-5 py-2.5"><BarraProgreso pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} /></td>
-      </tr>
-    </>
+    <tr className={`border-b border-slate-100 transition-colors ${superado ? 'bg-red-50' : 'hover:bg-slate-50/60'}`}>
+      <td className="px-5 py-3 text-xs">
+        <div className="flex items-center gap-2">
+          <PuntoSemaforo pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} />
+          <span className="font-semibold text-slate-800">{grupo.rubroNombre}</span>
+        </div>
+      </td>
+      <td className="px-5 py-3 text-right tabular-nums text-slate-600 text-xs">
+        {grupo.subtotalPres > 0 ? fmtARS(grupo.subtotalPres) : <span className="text-slate-300">—</span>}
+      </td>
+      <td className={`px-5 py-3 text-right tabular-nums text-xs font-medium ${superado ? 'text-red-700' : 'text-slate-600'}`}>
+        {grupo.subtotalGast > 0 ? fmtARS(grupo.subtotalGast) : <span className="text-slate-300">—</span>}
+      </td>
+      <td className={`px-5 py-3 text-right tabular-nums text-xs ${grupo.sinPresupuesto ? 'text-slate-400' : grupo.subtotalDif >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+        {grupo.sinPresupuesto ? '—' : fmtARS(grupo.subtotalDif)}
+      </td>
+      <td className="px-5 py-3"><BarraProgreso pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} /></td>
+    </tr>
   )
 }
 
