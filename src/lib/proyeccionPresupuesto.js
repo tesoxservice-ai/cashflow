@@ -15,8 +15,9 @@
 // "Registrar" o a mano) se muestra como "Venta proyectada". Así nunca queda
 // duplicado un movimiento cargado a mano por fuera del botón Registrar.
 //
-// Solo proyecta desde el mes que viene: el mes en curso se considera
-// "ya sucediendo" y no genera proyección nueva.
+// El gasto proyectado sigue proyectando recién desde el mes que viene (el mes
+// en curso se considera "ya sucediendo" y no genera proyección nueva). La
+// venta proyectada, en cambio, ya afecta el saldo desde el mes en curso.
 //
 // La fecha de estas filas grises arranca en el último día del período, pero
 // Finanzas la puede pisar con una fecha estimada propia (ver
@@ -27,6 +28,10 @@ export function ultimoDiaPeriodo(periodo) {
   const [anio, mes] = periodo.split('-').map(Number)
   const ultimo = new Date(anio, mes, 0) // día 0 del mes siguiente = último día de "mes"
   return `${ultimo.getFullYear()}-${String(ultimo.getMonth() + 1).padStart(2, '0')}-${String(ultimo.getDate()).padStart(2, '0')}`
+}
+
+function inicioMesDe(fecha) {
+  return `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-01`
 }
 
 function mesSiguienteA(fecha) {
@@ -129,14 +134,14 @@ export function construirFilaVirtual(proyectado, obras, rubros) {
 // Devuelve: [{ obra_id, periodo, presupuestado, ventaReal, saldoProyectado, fechaPago, afectaCashflow }]
 //
 // A diferencia del gasto proyectado, acá se muestra el saldo pendiente de
-// TODOS los períodos (incluidos los anteriores al mes que viene), para que
+// TODOS los períodos (incluidos los anteriores al mes en curso), para que
 // Finanzas siempre vea si quedó una venta proyectada vieja sin facturar. Pero
-// solo las de octubre en adelante (mesSiguienteA) suman/restan en el saldo
-// acumulado del Cash Flow -- las anteriores quedan como dato informativo
-// (afectaCashflow: false), porque ese período "ya pasó" y no es una
-// proyección real de caja futura.
+// solo las del mes en curso en adelante suman/restan en el saldo acumulado
+// del Cash Flow -- las anteriores quedan como dato informativo
+// (afectaCashflow: false), porque esos períodos ya pasaron del todo y no son
+// una proyección real de caja futura.
 export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechasEstimadas = [], obras = [], hoy = new Date()) {
-  const desde = mesSiguienteA(hoy)
+  const desde = inicioMesDe(hoy)
   const obrasActivas = new Set(obras.map(o => o.id))
 
   const presPorClave = {}
