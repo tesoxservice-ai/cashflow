@@ -37,14 +37,18 @@ function mesSiguienteA(fecha) {
 // presupuestos: [{ obra_id, rubro_id, periodo, monto }]
 // movimientos:  [{ categoria, tipo, obra_id, rubro_id, periodo, monto_bruto, estado_proyeccion }]
 // fechasEstimadas: [{ obra_id, rubro_id, periodo, fecha_estimada }] (gasto_proyectado_fecha_estimada)
+// obras:        [{ id, ... }] -- solo obras activas: una obra ya cerrada no
+//   genera proyección nueva en el Cash Flow.
 // Devuelve: [{ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado, fechaPago }]
-export function calcularGastosProyectados(presupuestos, movimientos, fechasEstimadas = [], hoy = new Date()) {
+export function calcularGastosProyectados(presupuestos, movimientos, fechasEstimadas = [], obras = [], hoy = new Date()) {
   const desde = mesSiguienteA(hoy)
+  const obrasActivas = new Set(obras.map(o => o.id))
 
   const presPorClave = {}
   presupuestos.forEach(p => {
     if (!p.obra_id || !p.rubro_id || !p.periodo) return
     if (p.periodo < desde) return
+    if (!obrasActivas.has(p.obra_id)) return
     const k = `${p.obra_id}|${p.rubro_id}|${p.periodo}`
     presPorClave[k] = (presPorClave[k] ?? 0) + Number(p.monto)
   })
@@ -120,14 +124,25 @@ export function construirFilaVirtual(proyectado, obras, rubros) {
 //   o no: si ya se registraron, su movimiento real ya las va a descontar solo)
 // movimientos:        [{ categoria, tipo, obra_id, periodo, monto_bruto, estado_proyeccion }]
 // fechasEstimadas:    [{ obra_id, periodo, fecha_estimada }] (venta_proyectada_fecha_estimada)
-// Devuelve: [{ obra_id, periodo, presupuestado, ventaReal, saldoProyectado, fechaPago }]
-export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechasEstimadas = [], hoy = new Date()) {
+// obras:              [{ id, ... }] -- solo obras activas: una obra ya cerrada
+//   no genera proyección nueva en el Cash Flow.
+// Devuelve: [{ obra_id, periodo, presupuestado, ventaReal, saldoProyectado, fechaPago, afectaCashflow }]
+//
+// A diferencia del gasto proyectado, acá se muestra el saldo pendiente de
+// TODOS los períodos (incluidos los anteriores al mes que viene), para que
+// Finanzas siempre vea si quedó una venta proyectada vieja sin facturar. Pero
+// solo las de octubre en adelante (mesSiguienteA) suman/restan en el saldo
+// acumulado del Cash Flow -- las anteriores quedan como dato informativo
+// (afectaCashflow: false), porque ese período "ya pasó" y no es una
+// proyección real de caja futura.
+export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechasEstimadas = [], obras = [], hoy = new Date()) {
   const desde = mesSiguienteA(hoy)
+  const obrasActivas = new Set(obras.map(o => o.id))
 
   const presPorClave = {}
   ;(ventasProyectadas ?? []).forEach(v => {
     if (!v.obra_id || !v.periodo) return
-    if (v.periodo < desde) return
+    if (!obrasActivas.has(v.obra_id)) return
     const k = `${v.obra_id}|${v.periodo}`
     presPorClave[k] = (presPorClave[k] ?? 0) + Number(v.monto)
   })
@@ -160,7 +175,8 @@ export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechas
     const [obra_id, periodo] = k.split('|')
     const fechaPago = fechaEstimadaPorClave[k] ?? ultimoDiaPeriodo(periodo)
     const concepto = conceptoPorClave[k] ?? null
-    resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado, fechaPago, concepto })
+    const afectaCashflow = periodo >= desde
+    resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado, fechaPago, concepto, afectaCashflow })
   })
   return resultado
 }
@@ -179,6 +195,7 @@ export function construirFilaVirtualVenta(proyectada, obras) {
     _presupuestado: proyectada.presupuestado,
     _gastoReal: proyectada.ventaReal,
     _conceptoManual: proyectada.concepto ?? null,
+    _afectaCashflow: proyectada.afectaCashflow !== false,
     _claveFecha: { obra_id: proyectada.obra_id, periodo: proyectada.periodo },
     tipo: 'ingreso',
     categoria: 'venta_proyectada',
@@ -208,8 +225,8 @@ export function construirFilaVirtualVenta(proyectada, obras) {
 // de pago (a igualdad de fecha, los reales van antes que las proyecciones, y
 // después se desempata por id para que el orden sea estable).
 export function combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, hoy = new Date()) {
-  const gastosProyectados = calcularGastosProyectados(presupuestos, movimientos, fechasEstimadasGasto, hoy)
-  const ventasPendientes  = calcularVentasProyectadas(ventasProyectadas, movimientos, fechasEstimadasVenta, hoy)
+  const gastosProyectados = calcularGastosProyectados(presupuestos, movimientos, fechasEstimadasGasto, obras, hoy)
+  const ventasPendientes  = calcularVentasProyectadas(ventasProyectadas, movimientos, fechasEstimadasVenta, obras, hoy)
   const virtuales = [
     ...gastosProyectados.map(p => construirFilaVirtual(p, obras, rubros)),
     ...ventasPendientes.map(v => construirFilaVirtualVenta(v, obras)),

@@ -199,7 +199,7 @@ async function cargarDatosExportDirectorio() {
 
   let saldo = sumaSaldosBase
   const movConSaldo = movConProyeccion.map(m => {
-    if (m.estado_proyeccion !== 'no_cumple') {
+    if (m.estado_proyeccion !== 'no_cumple' && m._afectaCashflow !== false) {
       saldo += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
     }
     return { ...m, saldoAcumulado: saldo }
@@ -210,6 +210,7 @@ async function cargarDatosExportDirectorio() {
     const fecha = m.fecha_pago
     if (!fecha || fecha > hoy) return
     if (m.estado_proyeccion === 'no_cumple') return
+    if (m._afectaCashflow === false) return
     saldoHoy += m.tipo === 'ingreso' ? m.montoEfectivo : -m.montoEfectivo
   })
 
@@ -899,7 +900,7 @@ function TabCashFlow() {
     const sumaSaldosBase = saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0)
     let saldoActual = sumaSaldosBase
     const resultado = movimientosCombinados.map(m => {
-      if (m.estado_proyeccion !== 'no_cumple') {
+      if (m.estado_proyeccion !== 'no_cumple' && m._afectaCashflow !== false) {
         if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
         else                      saldoActual -= m.montoEfectivo
       }
@@ -920,6 +921,7 @@ function TabCashFlow() {
       const fecha = m.fecha_pago
       if (!fecha || fecha > hoy) return
       if (m.estado_proyeccion === 'no_cumple') return
+      if (m._afectaCashflow === false) return
       if (m.tipo === 'ingreso') saldoHoy += m.montoEfectivo
       else                      saldoHoy -= m.montoEfectivo
     })
@@ -978,6 +980,7 @@ function TabCashFlow() {
   const totales = useMemo(() => {
     let ingresos = 0, egresos = 0
     filasFiltradas.forEach(m => {
+      if (m._afectaCashflow === false) return
       if (m.tipo === 'ingreso') ingresos += m.montoEfectivo
       else                      egresos  += m.montoEfectivo
     })
@@ -1158,6 +1161,11 @@ function TabCashFlow() {
                             {m._gastoReal > 0 && (
                               <span className="block not-italic text-slate-400 text-[10px]">
                                 Ya registrado: {fmtARS(m._gastoReal)} de {fmtARS(m._presupuestado)}
+                              </span>
+                            )}
+                            {m._afectaCashflow === false && (
+                              <span className="block not-italic text-amber-600 font-medium text-[10px]" title="Período anterior al mes en curso: se muestra como dato, pero no suma ni resta en el saldo del Cash Flow">
+                                No afecta el saldo (período pasado)
                               </span>
                             )}
                           </span>

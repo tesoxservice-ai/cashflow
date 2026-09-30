@@ -148,6 +148,8 @@ export default function VentasProyectadasFinanzas() {
   const [registrando,  setRegistrando]  = useState(false)
   const [errorModal,   setErrorModal]   = useState('')
 
+  const [eliminando, setEliminando] = useState(null)
+
   useEffect(() => {
     async function cargarMaestros() {
       const [{ data: dataObras }, { data: dataCuentas }, { data: dataRubros }] = await Promise.all([
@@ -166,7 +168,7 @@ export default function VentasProyectadasFinanzas() {
     setCargando(true); setError('')
     let q = supabase
       .from('ventas_proyectadas')
-      .select('id, obra_id, rubro, periodo, monto, registrado, obras(codigo, nombre, cliente)')
+      .select('id, obra_id, rubro, periodo, monto, registrado, movimiento_id, obras(codigo, nombre, cliente)')
       .order('periodo', { ascending: true })
       .order('rubro',   { ascending: true })
 
@@ -223,6 +225,32 @@ export default function VentasProyectadasFinanzas() {
     if (updError) { setErrorModal('El ingreso se creó pero no se pudo marcar como registrado.'); setRegistrando(false); return }
 
     setModalVenta(null); setRegistrando(false); await cargarVentas()
+  }
+
+  // Borra una venta proyectada ya registrada (por ejemplo, una cargada de
+  // prueba). Como ventas_proyectadas es la misma tabla que ve Operaciones,
+  // al borrarla acá también desaparece de su lado. Si tenía un movimiento de
+  // ingreso asociado (creado al "Registrar ingreso"), lo borra también para
+  // que no quede huérfano en el Cash Flow.
+  async function handleEliminar(v) {
+    const confirmMsg = v.movimiento_id
+      ? `¿Eliminar esta venta proyectada (${v.obras?.codigo} · ${labelPeriodo(v.periodo)})? También se va a borrar el movimiento de ingreso que ya se registró. No se puede deshacer, y desaparece también para Operaciones.`
+      : `¿Eliminar esta venta proyectada (${v.obras?.codigo} · ${labelPeriodo(v.periodo)})? No se puede deshacer, y desaparece también para Operaciones.`
+    if (!window.confirm(confirmMsg)) return
+
+    setError('')
+    setEliminando(v.id)
+
+    if (v.movimiento_id) {
+      const { error: movError } = await supabase.from('movimientos').delete().eq('id', v.movimiento_id)
+      if (movError) { setError('No se pudo borrar el movimiento de ingreso asociado.'); setEliminando(null); return }
+    }
+
+    const { error: delError } = await supabase.from('ventas_proyectadas').delete().eq('id', v.id)
+    if (delError) { setError('No se pudo eliminar la venta proyectada.'); setEliminando(null); return }
+
+    setEliminando(null)
+    await cargarVentas()
   }
 
   const totalPendiente  = ventas.filter(v => !v.registrado).reduce((s, v) => s + Number(v.monto), 0)
@@ -361,7 +389,7 @@ export default function VentasProyectadasFinanzas() {
                         )}
                       </td>
                       <td className="px-5 py-3.5 text-right">
-                        {!v.registrado && (
+                        {!v.registrado ? (
                           <button onClick={() => abrirModal(v)}
                             className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg
                                        transition-colors shadow-sm"
@@ -369,6 +397,12 @@ export default function VentasProyectadasFinanzas() {
                             onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
                             onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}>
                             Registrar ingreso
+                          </button>
+                        ) : (
+                          <button onClick={() => handleEliminar(v)} disabled={eliminando === v.id}
+                            className="text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50
+                                       disabled:opacity-50 px-3 py-1.5 rounded-lg transition-colors">
+                            {eliminando === v.id ? 'Eliminando…' : 'Eliminar'}
                           </button>
                         )}
                       </td>

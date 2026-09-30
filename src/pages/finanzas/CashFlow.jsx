@@ -407,8 +407,10 @@ export default function CashFlow() {
     let saldoActual = sumaSaldosBase
     const resultado = movimientosCombinados.map(m => {
       // "No se cumple": el movimiento queda registrado pero no suma/resta
-      // en el saldo acumulado (no se borra ni se pierde el dato).
-      if (m.estado_proyeccion !== 'no_cumple') {
+      // en el saldo acumulado (no se borra ni se pierde el dato). Lo mismo
+      // para una venta proyectada de un período anterior a este mes: se
+      // muestra como dato informativo pero no afecta el saldo.
+      if (m.estado_proyeccion !== 'no_cumple' && m._afectaCashflow !== false) {
         if (m.tipo === 'ingreso') saldoActual += m.montoEfectivo
         else                      saldoActual -= m.montoEfectivo
       }
@@ -431,6 +433,7 @@ export default function CashFlow() {
       const fecha = m.fecha_pago
       if (!fecha || fecha > hoy) return
       if (m.estado_proyeccion === 'no_cumple') return
+      if (m._afectaCashflow === false) return
       if (m.tipo === 'ingreso') saldoHoy += m.montoEfectivo
       else                      saldoHoy -= m.montoEfectivo
     })
@@ -480,6 +483,7 @@ export default function CashFlow() {
   const totales = useMemo(() => {
     let ingresos = 0, egresos = 0
     filasFiltradas.forEach(m => {
+      if (m._afectaCashflow === false) return
       if (m.tipo === 'ingreso') ingresos += m.montoEfectivo
       else                      egresos  += m.montoEfectivo
     })
@@ -1184,6 +1188,11 @@ function TablaCashFlow({
                         {m._gastoReal > 0 && (
                           <span className="block not-italic text-slate-400">
                             Ya registrado: {fmtARS(m._gastoReal)} de {fmtARS(m._presupuestado)}
+                          </span>
+                        )}
+                        {m._afectaCashflow === false && (
+                          <span className="block not-italic text-amber-600 font-medium" title="Período anterior al mes en curso: se muestra como dato, pero no suma ni resta en el saldo del Cash Flow">
+                            No afecta el saldo (período pasado)
                           </span>
                         )}
                       </span>
