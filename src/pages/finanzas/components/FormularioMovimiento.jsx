@@ -10,6 +10,8 @@
 //   userId    → id del usuario logueado
 //   onGuardado → callback sin args, se llama tras INSERT exitoso
 //   onCancelar → callback para cerrar el panel
+//   categoriaInicial → opcional, precarga el form con esa categoría ya
+//     seleccionada (ej: 'fima' desde el módulo FIMA)
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../supabaseClient'
@@ -108,11 +110,9 @@ const FORM_VACIO = {
   numero_op:          '',
   fecha_pago:         '',
   periodo:            PERIODOS[0].value,
-  cuenta_id:          '',
+  cuenta_id:          '', // solo se usa si hay más de una cuenta activa (ver cuentaUnica)
   monto_bruto:        '',
   concepto:           '',
-  // FIMA específico
-  fima_fondo_id:      '',
   // Débito automático específico
   debito_config_id:   '',
 }
@@ -121,9 +121,11 @@ const FORM_VACIO = {
 // COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════════
 export default function FormularioMovimiento({
-  obras, rubros, cuentas, debitos, userId, onGuardado, onCancelar,
+  obras, rubros, cuentas, debitos, userId, onGuardado, onCancelar, categoriaInicial = '',
 }) {
-  const [form,         setForm]         = useState(FORM_VACIO)
+  const [form,         setForm]         = useState(
+    categoriaInicial ? { ...FORM_VACIO, categoria: categoriaInicial } : FORM_VACIO
+  )
   const [guardando,    setGuardando]    = useState(false)
   const [error,        setError]        = useState('')
   const [advertencia,  setAdvertencia]  = useState(null) // objeto con info de presupuesto
@@ -174,8 +176,10 @@ export default function FormularioMovimiento({
     && (form.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
   )
 
-  // ── Cuentas de tipo fondo_inversion (para FIMA) ───────────────
-  const fondos = cuentas.filter(c => c.tipo === 'fondo_inversion' && c.activa)
+  // ── Cuenta: hoy solo existe Galicia, así que se asigna sola y no
+  // se le hace elegir nada a Finanzas. Si el día de mañana hay más de
+  // una cuenta activa, esto vuelve a pedir que se elija.
+  const cuentaUnica = cuentas.filter(c => c.activa).length === 1 ? cuentas.find(c => c.activa) : null
 
   // ── Verificación de presupuesto (solo para facturas con obra+rubro) ──
   useEffect(() => {
@@ -244,7 +248,8 @@ export default function FormularioMovimiento({
     if (!form.categoria)   { setError('Seleccioná una categoría.'); return }
     if (!form.periodo)     { setError('Seleccioná un período.'); return }
     if (!form.fecha_pago)  { setError('Elegí la fecha de pago (sin fecha el movimiento no entra bien al Cash Flow).'); return }
-    if (!form.cuenta_id)   { setError('Seleccioná una cuenta.'); return }
+    const cuentaId = cuentaUnica?.id ?? form.cuenta_id
+    if (!cuentaId)          { setError('Seleccioná una cuenta.'); return }
     if (!form.monto_bruto || isNaN(Number(form.monto_bruto)) || Number(form.monto_bruto) <= 0) {
       setError('Ingresá un monto válido mayor a cero.')
       return
@@ -268,7 +273,7 @@ export default function FormularioMovimiento({
       tipo,
       categoria:         form.categoria,
       periodo:           form.periodo,
-      cuenta_id:         form.cuenta_id,
+      cuenta_id:         cuentaId,
       monto_bruto:       Number(form.monto_bruto),
       estado:            'proyectado',
       created_by:        userId,
@@ -425,16 +430,6 @@ export default function FormularioMovimiento({
               </Campo>
             )}
 
-            {/* Fondo FIMA */}
-            {cat === 'fima' && (
-              <Campo label="Fondo *">
-                <select value={form.fima_fondo_id} onChange={e => set('fima_fondo_id', e.target.value)} className={selectCls}>
-                  <option value="">— Seleccioná fondo —</option>
-                  {fondos.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
-                </select>
-              </Campo>
-            )}
-
             {/* Fecha de pago */}
             {cat !== '' && (
               <Campo label="Fecha de pago *">
@@ -450,15 +445,17 @@ export default function FormularioMovimiento({
               </select>
             </Campo>
 
-            {/* Cuenta */}
-            <Campo label="Cuenta *">
-              <select value={form.cuenta_id} onChange={e => set('cuenta_id', e.target.value)} className={selectCls}>
-                <option value="">— Seleccioná —</option>
-                {cuentas.filter(c => c.activa).map(c => (
-                  <option key={c.id} value={c.id}>{c.nombre}</option>
-                ))}
-              </select>
-            </Campo>
+            {/* Cuenta: solo se muestra si hay que elegir (más de una cuenta activa) */}
+            {!cuentaUnica && (
+              <Campo label="Cuenta *">
+                <select value={form.cuenta_id} onChange={e => set('cuenta_id', e.target.value)} className={selectCls}>
+                  <option value="">— Seleccioná —</option>
+                  {cuentas.filter(c => c.activa).map(c => (
+                    <option key={c.id} value={c.id}>{c.nombre}</option>
+                  ))}
+                </select>
+              </Campo>
+            )}
 
             {/* Monto bruto */}
             <Campo label="Monto bruto *">

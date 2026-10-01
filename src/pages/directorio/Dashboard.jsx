@@ -1037,6 +1037,8 @@ function TabCashFlow() {
               color={cards.pos90 >= 0 ? 'text-emerald-600' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(90))}`} />
           </div>
 
+          <CardsFima />
+
           {puntosExtremos && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <CardResumen label="Punto más alto" valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
@@ -1232,6 +1234,112 @@ function TabCashFlow() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// Cards FIMA (solo lectura — saldo del fondo, separado del banco).
+// Se muestran debajo de las 4 cards de posición del Cash Flow.
+// ══════════════════════════════════════════════════════════════
+function CardsFima() {
+  const [saldoInicial, setSaldoInicial] = useState(null)
+  const [movimientos,  setMovimientos]  = useState([])
+  const [cargando,     setCargando]     = useState(true)
+  const [error,        setError]        = useState('')
+
+  useEffect(() => {
+    async function cargar() {
+      setCargando(true); setError('')
+      const [{ data: dataFima, error: e1 }, { data: dataMovs, error: e2 }] = await Promise.all([
+        supabase.from('fima_saldo_inicial').select('id, monto, fecha')
+          .order('fecha', { ascending: false }).order('created_at', { ascending: false }).limit(1),
+        supabase.from('movimientos')
+          .select('id, tipo, monto_bruto, monto_neto, fecha_pago, estado, estado_proyeccion')
+          .eq('categoria', 'fima')
+          .order('fecha_pago', { ascending: true, nullsFirst: false })
+          .order('created_at', { ascending: true }),
+      ])
+      if (e2) { setError('No se pudo cargar el FIMA.'); setCargando(false); return }
+      setSaldoInicial(e1 ? null : (dataFima?.[0] ?? null))
+      setMovimientos((dataMovs ?? []).map(m => ({
+        ...m, montoEfectivo: m.estado === 'ejecutado' ? Number(m.monto_neto ?? m.monto_bruto ?? 0) : Number(m.monto_bruto ?? 0),
+      })))
+      setCargando(false)
+    }
+    cargar()
+  }, [])
+
+  const saldoInicialMonto = Number(saldoInicial?.monto ?? 0)
+  const saldoInicialFecha = saldoInicial?.fecha ?? null
+
+  // Igual que en el módulo de Finanzas: los movimientos anteriores a la
+  // fecha de corte del saldo inicial no se vuelven a sumar (ya están
+  // "adentro" de ese número), se reconstruyen hacia atrás solo para el
+  // detalle. Los posteriores se suman hacia adelante como siempre.
+  const movimientosConSaldo = useMemo(() => {
+    const corte = saldoInicialFecha
+    const antes   = corte ? movimientos.filter(m => m.fecha_pago < corte) : []
+    const despues = corte ? movimientos.filter(m => m.fecha_pago >= corte) : movimientos
+
+    // "No se cumple" no mueve el saldo del fondo, igual que en el Cash Flow bancario.
+    const delta = m => m.estado_proyeccion === 'no_cumple' ? 0 : (m.tipo === 'egreso' ? m.montoEfectivo : -m.montoEfectivo)
+
+    let cursorAdelante = saldoInicialMonto
+    const despuesConSaldo = despues.map(m => {
+      cursorAdelante += delta(m)
+      return { ...m, saldoFima: cursorAdelante }
+    })
+
+    let cursorAtras = saldoInicialMonto
+    const antesConSaldo = [...antes].reverse().map(m => {
+      const saldoLuegoDeEste = cursorAtras
+      cursorAtras -= delta(m)
+      return { ...m, saldoFima: saldoLuegoDeEste }
+    }).reverse()
+
+    return [...antesConSaldo, ...despuesConSaldo]
+  }, [movimientos, saldoInicialMonto, saldoInicialFecha])
+
+  function posicionFimaEn(fechaLimite) {
+    let ultimo = saldoInicialMonto
+    for (const m of movimientosConSaldo) {
+      if (!m.fecha_pago || m.fecha_pago > fechaLimite) break
+      ultimo = m.saldoFima
+    }
+    return ultimo
+  }
+
+  const hoy = hoyISO()
+  const saldoHoy = posicionFimaEn(hoy)
+  const pos30 = posicionFimaEn(fechaFutura(30))
+  const pos60 = posicionFimaEn(fechaFutura(60))
+  const pos90 = posicionFimaEn(fechaFutura(90))
+
+  if (cargando) return null
+
+  return (
+    <div>
+      {error && (
+        <div className="bg-red-50 border border-red-100 text-red-700 text-sm rounded-xl px-4 py-3 mb-4">{error}</div>
+      )}
+
+      {!saldoInicial && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3 mb-4">
+          Finanzas todavía no cargó el saldo inicial del FIMA — los números de acá abajo todavía no son definitivos.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <CardResumen label="Saldo FIMA hoy" valor={fmtARS(saldoHoy)}
+          color={saldoHoy >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel="Plata invertida en el fondo (no es saldo bancario)" />
+        <CardResumen label="Posición FIMA a 30 días" valor={fmtARS(pos30)}
+          color={pos30 >= 0 ? 'text-emerald-600' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(30))}`} />
+        <CardResumen label="Posición FIMA a 60 días" valor={fmtARS(pos60)}
+          color={pos60 >= 0 ? 'text-emerald-600' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(60))}`} />
+        <CardResumen label="Posición FIMA a 90 días" valor={fmtARS(pos90)}
+          color={pos90 >= 0 ? 'text-emerald-600' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(90))}`} />
+      </div>
     </div>
   )
 }

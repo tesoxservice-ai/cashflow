@@ -57,6 +57,13 @@ const IconMargen = () => (
   </svg>
 )
 
+const IconFima = () => (
+  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round"
+      d="M12 6v12m-4-9h5.5a2.5 2.5 0 010 5H10a2.5 2.5 0 000 5h6" />
+  </svg>
+)
+
 const IconPresupuesto = () => (
   <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round"
@@ -344,6 +351,12 @@ export default function DashboardFinanzas() {
       descripcion: 'Ingresos proyectados menos egresos presupuestados, por obra y período.',
       icono: <IconMargen />,
       ruta: '/finanzas/margen',
+    },
+    {
+      titulo: 'FIMA',
+      descripcion: 'Saldo del fondo de inversión, separado del saldo bancario, con evolución proyectada. (Prototipo)',
+      icono: <IconFima />,
+      ruta: '/finanzas/fima',
     },
   ]
 

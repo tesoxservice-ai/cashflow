@@ -180,7 +180,11 @@ export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechas
     const [obra_id, periodo] = k.split('|')
     const fechaPago = fechaEstimadaPorClave[k] ?? ultimoDiaPeriodo(periodo)
     const concepto = conceptoPorClave[k] ?? null
-    const afectaCashflow = periodo >= desde
+    // Por default se mira el período: si es viejo, es solo informativo. Pero
+    // si Finanzas pisó la fecha a mano con "Editar fecha" (fechaEstimadaPorClave),
+    // es porque sabe cuándo se va a cobrar de verdad -- esa fecha manda, aunque
+    // el período original ya haya pasado.
+    const afectaCashflow = fechaPago >= desde
     resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado, fechaPago, concepto, afectaCashflow })
   })
   return resultado
