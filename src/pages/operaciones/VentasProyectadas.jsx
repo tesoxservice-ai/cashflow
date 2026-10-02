@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import { calcularCoberturaVentas } from '../../lib/proyeccionPresupuesto'
 
 const RUBROS = [
   { value: 'abono',                  label: 'Abono' },
@@ -127,6 +128,7 @@ export default function VentasProyectadas() {
   const [obras,            setObras]            = useState([])
   const [obraSeleccionada, setObraSeleccionada] = useState('')
   const [ventas,           setVentas]           = useState([])
+  const [cobertura,        setCobertura]        = useState({})
   const [cargandoObras,    setCargandoObras]    = useState(true)
   const [cargando,         setCargando]         = useState(false)
   const [error,            setError]            = useState('')
@@ -153,14 +155,26 @@ export default function VentasProyectadas() {
     cargarObras()
   }, [])
 
+  // El candado de edición/borrado por fila no depende de un flag manual: se
+  // calcula en vivo contra los ingresos de Ventas ya cargados en Movimientos
+  // para esta obra (misma lógica que usa el Cash Flow). Así, si Finanzas ya
+  // facturó ese período, Operaciones no puede seguir editando esa proyección
+  // aunque el ingreso real se haya cargado por fuera de cualquier botón.
   const cargarVentas = useCallback(async (obraId) => {
-    if (!obraId) { setVentas([]); return }
+    if (!obraId) { setVentas([]); setCobertura({}); return }
     setCargando(true)
-    const { data, error } = await supabase.from('ventas_proyectadas')
-      .select('id, rubro, periodo, monto, registrado').eq('obra_id', obraId)
-      .order('periodo', { ascending: true }).order('rubro', { ascending: true })
-    if (error) setError('No se pudieron cargar las ventas.')
-    setVentas(data ?? []); setCargando(false)
+    const [{ data: dataVentas, error: errVentas }, { data: dataMov, error: errMov }] = await Promise.all([
+      supabase.from('ventas_proyectadas')
+        .select('id, obra_id, rubro, periodo, monto').eq('obra_id', obraId)
+        .order('periodo', { ascending: true }).order('rubro', { ascending: true }),
+      supabase.from('movimientos')
+        .select('obra_id, periodo, tipo, categoria, monto_bruto, estado_proyeccion')
+        .eq('obra_id', obraId).eq('categoria', 'ingreso_cliente').eq('tipo', 'ingreso'),
+    ])
+    if (errVentas || errMov) setError('No se pudieron cargar las ventas.')
+    setVentas(dataVentas ?? [])
+    setCobertura(calcularCoberturaVentas(dataVentas ?? [], dataMov ?? []))
+    setCargando(false)
   }, [])
 
   useEffect(() => {
@@ -337,8 +351,9 @@ export default function VentasProyectadas() {
                               </td>
                             </tr>
                           )}
-                          {grupos.map(([periodo, filas]) => filas.map((v, i) => (
-                            filaEditando === v.id ? (
+                          {grupos.map(([periodo, filas]) => filas.map((v, i) => {
+                            const cubierto = cobertura[`${v.obra_id}|${v.periodo}`]?.cubierto ?? false
+                            return filaEditando === v.id ? (
                               <FilaEdicion key={v.id} valores={valoresEdicion} guardando={guardandoEdicion}
                                 onChange={(campo, valor) => setValoresEdicion(val => ({ ...val, [campo]: valor }))}
                                 onGuardar={() => handleGuardarEdicion(v.id)}
@@ -355,13 +370,13 @@ export default function VentasProyectadas() {
                                 {fmtARS(v.monto)}
                               </td>
                               <td className="px-5 py-3.5 text-center">
-                                {v.registrado
-                                  ? <span className="text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100 px-2.5 py-0.5 rounded-full">Registrado</span>
+                                {cubierto
+                                  ? <span className="text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100 px-2.5 py-0.5 rounded-full" title="Finanzas ya cargó ingresos de Ventas que cubren este período">Facturado</span>
                                   : <span className="text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-100 px-2.5 py-0.5 rounded-full">Pendiente</span>}
                               </td>
                               <td className="px-5 py-3.5">
                                 <div className="flex items-center justify-end gap-2">
-                                  {!v.registrado && (
+                                  {!cubierto && (
                                     <button onClick={() => handleIniciarEdicion(v)}
                                       disabled={filaEditando !== null}
                                       className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg
@@ -372,7 +387,7 @@ export default function VentasProyectadas() {
                                       Editar
                                     </button>
                                   )}
-                                  {v.rubro === 'abono' && !v.registrado && (
+                                  {v.rubro === 'abono' && !cubierto && (
                                     <button onClick={() => { setModalReplicar(v); setMesesReplicar(3); setErrorReplicar('') }}
                                       className="text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors border"
                                       style={{ backgroundColor: '#e0f2fe', color: '#0e7490', borderColor: '#a5f3fc' }}
@@ -381,7 +396,7 @@ export default function VentasProyectadas() {
                                       Replicar
                                     </button>
                                   )}
-                                  {!v.registrado && (
+                                  {!cubierto && (
                                     eliminando === v.id
                                       ? <span className="flex items-center gap-1.5 text-xs text-red-500 px-2">
                                           <span className="w-3.5 h-3.5 border-2 border-red-300 border-t-red-500 rounded-full animate-spin" />
@@ -398,7 +413,7 @@ export default function VentasProyectadas() {
                               </td>
                             </tr>
                             )
-                          )))}
+                          }))}
                         </tbody>
                         <tfoot>
                           <tr style={{ backgroundColor: '#e0f2fe' }} className="border-t-2 border-cyan-100">

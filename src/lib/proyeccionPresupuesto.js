@@ -190,6 +190,44 @@ export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechas
   return resultado
 }
 
+// Cobertura de venta proyectada por Obra + Período: cuánto de lo proyectado
+// por Operaciones ya está cubierto por ingresos reales de Ventas, sin
+// importar qué fila puntual (rubro) lo originó ni cómo se cargó el ingreso
+// real. Reemplaza al flag manual "registrado" (que solo se activaba si
+// Finanzas usaba un botón dedicado, y quedaba desactualizado si el ingreso
+// se cargaba directo en Movimientos como cualquier otro). Se usa tanto para
+// bloquear la edición en Operaciones como para el estado de solo lectura
+// que ve Finanzas.
+// ventasProyectadas: [{ obra_id, periodo, monto }]
+// movimientos:       [{ categoria, tipo, obra_id, periodo, monto_bruto, estado_proyeccion }]
+// Devuelve: { 'obra_id|periodo': { proyectado, real, pendiente, cubierto } }
+export function calcularCoberturaVentas(ventasProyectadas, movimientos) {
+  const proyectadoPorClave = {}
+  ;(ventasProyectadas ?? []).forEach(v => {
+    if (!v.obra_id || !v.periodo) return
+    const k = `${v.obra_id}|${v.periodo}`
+    proyectadoPorClave[k] = (proyectadoPorClave[k] ?? 0) + Number(v.monto)
+  })
+
+  const realPorClave = {}
+  ;(movimientos ?? []).forEach(m => {
+    if (m.categoria !== 'ingreso_cliente' || m.tipo !== 'ingreso') return
+    if (m.estado_proyeccion === 'no_cumple') return
+    if (!m.obra_id || !m.periodo) return
+    const k = `${m.obra_id}|${m.periodo}`
+    realPorClave[k] = (realPorClave[k] ?? 0) + Number(m.monto_bruto)
+  })
+
+  const resultado = {}
+  Object.keys(proyectadoPorClave).forEach(k => {
+    const proyectado = proyectadoPorClave[k]
+    const real = realPorClave[k] ?? 0
+    const pendiente = Math.max(0, proyectado - real)
+    resultado[k] = { proyectado, real, pendiente, cubierto: pendiente <= 0 }
+  })
+  return resultado
+}
+
 // Misma idea que construirFilaVirtual pero para el saldo de ventas proyectadas
 // todavía sin facturar de una Obra + Período. Conserva el período original del
 // presupuesto de ventas (proyectada.periodo) aunque la fecha se haya movido a

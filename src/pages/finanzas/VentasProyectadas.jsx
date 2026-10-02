@@ -1,10 +1,14 @@
 // pages/finanzas/VentasProyectadas.jsx
-// Rediseño visual coherente con el sistema de diseño PSDATA.
+// Solo lectura: muestra lo que Operaciones proyectó, con el estado de
+// cobertura calculado contra los ingresos reales ya cargados en Movimientos.
+// Finanzas registra el cobro real como cualquier otro movimiento en
+// Movimientos; acá no se crea ni se borra nada, para no duplicar ingresos.
 
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import { calcularCoberturaVentas } from '../../lib/proyeccionPresupuesto'
 
 const RUBROS = [
   { value: 'abono',                  label: 'Abono' },
@@ -130,132 +134,73 @@ function TopNav({ perfil }) {
 // ─── Componente principal ─────────────────────────────────────────────────────
 
 export default function VentasProyectadasFinanzas() {
-  const { user, perfil } = useAuth()
+  const { perfil } = useAuth()
   const navigate = useNavigate()
 
   const [obras,         setObras]         = useState([])
-  const [cuentas,       setCuentas]       = useState([])
-  const [rubros,        setRubros]        = useState([])
   const [obraFiltro,    setObraFiltro]    = useState('')
   const [periodoFiltro, setPeriodoFiltro] = useState('todos')
   const [estadoFiltro,  setEstadoFiltro]  = useState('pendiente')
   const [ventas,        setVentas]        = useState([])
+  const [cobertura,     setCobertura]     = useState({})
   const [cargando,      setCargando]      = useState(false)
   const [error,         setError]         = useState('')
 
-  const [modalVenta,   setModalVenta]   = useState(null)
-  const [formRegistro, setFormRegistro] = useState({ cuenta_id: '', fecha_pago: '', monto_neto: '', observaciones: '' })
-  const [registrando,  setRegistrando]  = useState(false)
-  const [errorModal,   setErrorModal]   = useState('')
-
-  const [eliminando, setEliminando] = useState(null)
-
   useEffect(() => {
-    async function cargarMaestros() {
-      const [{ data: dataObras }, { data: dataCuentas }, { data: dataRubros }] = await Promise.all([
-        supabase.from('obras').select('id, codigo, nombre, cliente').eq('activa', true).order('codigo'),
-        supabase.from('cuentas').select('id, nombre, tipo').eq('activa', true).order('nombre'),
-        supabase.from('rubros').select('id, nombre, tipo').eq('activo', true),
-      ])
-      setObras(dataObras   ?? [])
-      setCuentas(dataCuentas ?? [])
-      setRubros(dataRubros ?? [])
-    }
-    cargarMaestros()
+    supabase.from('obras').select('id, codigo, nombre, cliente').eq('activa', true).order('codigo')
+      .then(({ data }) => setObras(data ?? []))
   }, [])
 
-  const cargarVentas = useCallback(async () => {
+  const cargarDatos = useCallback(async () => {
     setCargando(true); setError('')
+
     let q = supabase
       .from('ventas_proyectadas')
-      .select('id, obra_id, rubro, periodo, monto, registrado, movimiento_id, obras(codigo, nombre, cliente)')
+      .select('id, obra_id, rubro, periodo, monto, obras(codigo, nombre, cliente)')
       .order('periodo', { ascending: true })
       .order('rubro',   { ascending: true })
-
     if (obraFiltro) q = q.eq('obra_id', obraFiltro)
     if (periodoFiltro !== 'todos') q = q.eq('periodo', periodoFiltro)
-    if (estadoFiltro === 'pendiente')  q = q.eq('registrado', false)
-    if (estadoFiltro === 'registrado') q = q.eq('registrado', true)
 
-    const { data, error } = await q
-    if (error) { setError('No se pudieron cargar las ventas.'); setCargando(false); return }
-    setVentas(data ?? [])
+    // La cobertura se calcula contra TODOS los ingresos de Ventas, sin
+    // filtrar por obra/período: si se filtra la lista a una sola obra, los
+    // grupos obra+período que se muestran siguen completos igual.
+    const [{ data: dataVentas, error: errVentas }, { data: dataMov, error: errMov }] = await Promise.all([
+      q,
+      supabase.from('movimientos')
+        .select('obra_id, periodo, tipo, categoria, monto_bruto, estado_proyeccion')
+        .eq('categoria', 'ingreso_cliente').eq('tipo', 'ingreso'),
+    ])
+
+    if (errVentas || errMov) { setError('No se pudieron cargar las ventas proyectadas.'); setCargando(false); return }
+
+    setVentas(dataVentas ?? [])
+    setCobertura(calcularCoberturaVentas(dataVentas ?? [], dataMov ?? []))
     setCargando(false)
-  }, [obraFiltro, periodoFiltro, estadoFiltro])
+  }, [obraFiltro, periodoFiltro])
 
-  useEffect(() => { cargarVentas() }, [cargarVentas])
+  useEffect(() => { cargarDatos() }, [cargarDatos])
 
-  function abrirModal(venta) {
-    setModalVenta(venta)
-    setFormRegistro({ cuenta_id: cuentas[0]?.id ?? '', fecha_pago: '', monto_neto: String(venta.monto), observaciones: '' })
-    setErrorModal('')
-  }
+  const ventasConEstado = ventas.map(v => {
+    const c = cobertura[`${v.obra_id}|${v.periodo}`]
+    return { ...v, cubierto: c?.cubierto ?? false, pendienteGrupo: c?.pendiente ?? Number(v.monto) }
+  })
 
-  async function handleRegistrar() {
-    setErrorModal('')
-    if (!formRegistro.cuenta_id)  { setErrorModal('Seleccioná una cuenta.'); return }
-    if (!formRegistro.fecha_pago) { setErrorModal('Ingresá la fecha de cobro.'); return }
-    if (!formRegistro.monto_neto || Number(formRegistro.monto_neto) <= 0) { setErrorModal('Ingresá un monto válido.'); return }
+  const ventasFiltradas = ventasConEstado.filter(v => {
+    if (estadoFiltro === 'pendiente') return !v.cubierto
+    if (estadoFiltro === 'cubierto')  return v.cubierto
+    return true
+  })
 
-    // El rubro de una Venta siempre es "Ventas" -- se asigna solo, no se elige.
-    const rubroVentas = rubros.find(r => r.nombre === 'Ventas' && r.tipo === (modalVenta.obra_id ? 'obra' : 'general'))
-
-    setRegistrando(true)
-    const { data: movData, error: movError } = await supabase
-      .from('movimientos')
-      .insert({
-        tipo: 'ingreso', categoria: 'ingreso_cliente',
-        proveedor_cliente: modalVenta.obras?.nombre ?? '',
-        monto_bruto: modalVenta.monto, monto_neto: Number(formRegistro.monto_neto),
-        obra_id: modalVenta.obra_id, rubro_id: rubroVentas?.id ?? null, periodo: modalVenta.periodo,
-        forma_pago: 'transferencia', fecha_pago: formRegistro.fecha_pago,
-        cuenta_id: formRegistro.cuenta_id, estado: 'ejecutado',
-        concepto: labelRubro(modalVenta.rubro),
-        observaciones: formRegistro.observaciones || null, created_by: user.id,
-      })
-      .select('id').single()
-
-    if (movError) { setErrorModal('Error al crear el movimiento. Intentá de nuevo.'); setRegistrando(false); return }
-
-    const { error: updError } = await supabase
-      .from('ventas_proyectadas')
-      .update({ registrado: true, movimiento_id: movData.id })
-      .eq('id', modalVenta.id)
-
-    if (updError) { setErrorModal('El ingreso se creó pero no se pudo marcar como registrado.'); setRegistrando(false); return }
-
-    setModalVenta(null); setRegistrando(false); await cargarVentas()
-  }
-
-  // Borra una venta proyectada ya registrada (por ejemplo, una cargada de
-  // prueba). Como ventas_proyectadas es la misma tabla que ve Operaciones,
-  // al borrarla acá también desaparece de su lado. Si tenía un movimiento de
-  // ingreso asociado (creado al "Registrar ingreso"), lo borra también para
-  // que no quede huérfano en el Cash Flow.
-  async function handleEliminar(v) {
-    const confirmMsg = v.movimiento_id
-      ? `¿Eliminar esta venta proyectada (${v.obras?.codigo} · ${labelPeriodo(v.periodo)})? También se va a borrar el movimiento de ingreso que ya se registró. No se puede deshacer, y desaparece también para Operaciones.`
-      : `¿Eliminar esta venta proyectada (${v.obras?.codigo} · ${labelPeriodo(v.periodo)})? No se puede deshacer, y desaparece también para Operaciones.`
-    if (!window.confirm(confirmMsg)) return
-
-    setError('')
-    setEliminando(v.id)
-
-    if (v.movimiento_id) {
-      const { error: movError } = await supabase.from('movimientos').delete().eq('id', v.movimiento_id)
-      if (movError) { setError('No se pudo borrar el movimiento de ingreso asociado.'); setEliminando(null); return }
-    }
-
-    const { error: delError } = await supabase.from('ventas_proyectadas').delete().eq('id', v.id)
-    if (delError) { setError('No se pudo eliminar la venta proyectada.'); setEliminando(null); return }
-
-    setEliminando(null)
-    await cargarVentas()
-  }
-
-  const totalPendiente  = ventas.filter(v => !v.registrado).reduce((s, v) => s + Number(v.monto), 0)
-  const totalRegistrado = ventas.filter(v =>  v.registrado).reduce((s, v) => s + Number(v.monto), 0)
-  const totalGeneral    = ventas.reduce((s, v) => s + Number(v.monto), 0)
+  // Los totales se arman por grupo obra+período, no por fila: si un período
+  // está cubierto solo en parte, lo pendiente es lo que falta de verdad, no el
+  // monto completo de las filas (si no, "Pendiente" se infla y se contradice
+  // con lo que muestra el Cash Flow).
+  const grupos         = Object.values(cobertura)
+  const totalGeneral   = grupos.reduce((s, g) => s + g.proyectado, 0)
+  const totalPendiente = grupos.reduce((s, g) => s + g.pendiente, 0)
+  const totalCubierto  = totalGeneral - totalPendiente
+  const totalFiltrado  = ventasFiltradas.reduce((s, v) => s + Number(v.monto), 0)
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
@@ -275,7 +220,8 @@ export default function VentasProyectadasFinanzas() {
           </button>
           <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Ventas Proyectadas</h1>
           <p className="text-slate-400 text-sm mt-0.5">
-            Ingresos esperados cargados por Operaciones. Registralos para que impacten en el Cash Flow.
+            Ingresos esperados cargados por Operaciones, de solo lectura. El cobro real se carga con "Nuevo movimiento" en el Cash Flow,
+            y el estado de acá se actualiza solo cuando esa factura/ingreso coincide en obra y período.
           </p>
         </div>
 
@@ -299,8 +245,8 @@ export default function VentasProyectadasFinanzas() {
               <label className={lbCls}>Estado</label>
               <select value={estadoFiltro} onChange={e => setEstadoFiltro(e.target.value)} className={selCls}>
                 <option value="todos">Todos</option>
-                <option value="pendiente">Pendientes</option>
-                <option value="registrado">Registrados</option>
+                <option value="pendiente">Pendientes de facturar</option>
+                <option value="cubierto">Ya cubiertas</option>
               </select>
             </div>
           </div>
@@ -309,8 +255,8 @@ export default function VentasProyectadasFinanzas() {
         {/* Cards resumen */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
           <CardResumen label="Total proyectado" valor={fmtARS(totalGeneral)} color="text-slate-900" />
-          <CardResumen label="Pendiente de registrar" valor={fmtARS(totalPendiente)} color="text-amber-600" />
-          <CardResumen label="Ya registrado" valor={fmtARS(totalRegistrado)} color="text-emerald-600" />
+          <CardResumen label="Pendiente de facturar" valor={fmtARS(totalPendiente)} color="text-amber-600" />
+          <CardResumen label="Ya cubierto por ingresos reales" valor={fmtARS(totalCubierto)} color="text-emerald-600" />
         </div>
 
         {/* Error */}
@@ -332,7 +278,7 @@ export default function VentasProyectadasFinanzas() {
             <span className="w-5 h-5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
             <span className="text-sm">Cargando ventas…</span>
           </div>
-        ) : ventas.length === 0 ? (
+        ) : ventasFiltradas.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center
                           bg-white rounded-2xl border border-slate-100 shadow-sm">
             <div className="w-14 h-14 rounded-full flex items-center justify-center mb-4"
@@ -359,11 +305,10 @@ export default function VentasProyectadasFinanzas() {
                     <Th>Rubro</Th>
                     <Th align="right">Monto</Th>
                     <Th align="center">Estado</Th>
-                    <Th>{/* acciones */}</Th>
                   </tr>
                 </thead>
                 <tbody>
-                  {ventas.map(v => (
+                  {ventasFiltradas.map(v => (
                     <tr key={v.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 transition-colors">
                       <td className="px-5 py-3.5 text-xs text-slate-700">
                         <span className="font-semibold text-slate-800">{v.obras?.codigo}</span>
@@ -376,34 +321,17 @@ export default function VentasProyectadasFinanzas() {
                         {fmtARS(v.monto)}
                       </td>
                       <td className="px-5 py-3.5 text-center">
-                        {v.registrado ? (
+                        {v.cubierto ? (
                           <span className="text-xs font-semibold bg-emerald-50 text-emerald-700
                                            border border-emerald-100 px-2.5 py-0.5 rounded-full">
-                            Registrado
+                            Cubierto
                           </span>
                         ) : (
                           <span className="text-xs font-semibold bg-amber-50 text-amber-700
-                                           border border-amber-100 px-2.5 py-0.5 rounded-full">
+                                           border border-amber-100 px-2.5 py-0.5 rounded-full"
+                            title={`Falta facturar ${fmtARS(v.pendienteGrupo)} de esta obra y período`}>
                             Pendiente
                           </span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3.5 text-right">
-                        {!v.registrado ? (
-                          <button onClick={() => abrirModal(v)}
-                            className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg
-                                       transition-colors shadow-sm"
-                            style={{ backgroundColor: '#0e7490' }}
-                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
-                            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}>
-                            Registrar ingreso
-                          </button>
-                        ) : (
-                          <button onClick={() => handleEliminar(v)} disabled={eliminando === v.id}
-                            className="text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50
-                                       disabled:opacity-50 px-3 py-1.5 rounded-lg transition-colors">
-                            {eliminando === v.id ? 'Eliminando…' : 'Eliminar'}
-                          </button>
                         )}
                       </td>
                     </tr>
@@ -415,9 +343,9 @@ export default function VentasProyectadasFinanzas() {
                       Total
                     </td>
                     <td className="px-5 py-3 text-right tabular-nums text-sm font-bold" style={{ color: '#0e7490' }}>
-                      {fmtARS(totalGeneral)}
+                      {fmtARS(totalFiltrado)}
                     </td>
-                    <td colSpan={2} />
+                    <td />
                   </tr>
                 </tfoot>
               </table>
@@ -425,92 +353,6 @@ export default function VentasProyectadasFinanzas() {
           </div>
         )}
       </main>
-
-      {/* Modal registrar ingreso */}
-      {modalVenta && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <h3 className="text-slate-900 font-extrabold text-base">Registrar ingreso</h3>
-                <p className="text-slate-400 text-sm mt-0.5">
-                  {labelRubro(modalVenta.rubro)} · {labelPeriodo(modalVenta.periodo)}
-                </p>
-                <p className="text-sm font-semibold mt-0.5" style={{ color: '#0e7490' }}>
-                  {modalVenta.obras?.codigo} · {modalVenta.obras?.nombre}
-                </p>
-              </div>
-              <button onClick={() => setModalVenta(null)}
-                className="text-slate-300 hover:text-slate-500 transition-colors mt-0.5">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="space-y-4 mb-5">
-              <div>
-                <label className={lbCls}>Cuenta de cobro</label>
-                <select value={formRegistro.cuenta_id}
-                  onChange={e => setFormRegistro(f => ({ ...f, cuenta_id: e.target.value }))}
-                  className={selCls}>
-                  <option value="">— Seleccioná —</option>
-                  {cuentas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className={lbCls}>Fecha de cobro</label>
-                <input type="date" value={formRegistro.fecha_pago}
-                  onChange={e => setFormRegistro(f => ({ ...f, fecha_pago: e.target.value }))}
-                  className={selCls} />
-              </div>
-              <div>
-                <label className={lbCls}>
-                  Monto neto cobrado
-                  <span className="text-slate-300 font-normal ml-1">(proyectado: {fmtARS(modalVenta.monto)})</span>
-                </label>
-                <input type="number" min="0.01" step="0.01"
-                  value={formRegistro.monto_neto}
-                  onChange={e => setFormRegistro(f => ({ ...f, monto_neto: e.target.value }))}
-                  className={selCls} />
-              </div>
-              <div>
-                <label className={lbCls}>Observaciones <span className="font-normal text-slate-300">(opcional)</span></label>
-                <input type="text" placeholder="Ej: Retención IIBB descontada"
-                  value={formRegistro.observaciones}
-                  onChange={e => setFormRegistro(f => ({ ...f, observaciones: e.target.value }))}
-                  className={selCls} />
-              </div>
-            </div>
-
-            {errorModal && (
-              <p className="text-red-600 text-xs mb-4 flex items-center gap-1.5">
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-                </svg>
-                {errorModal}
-              </p>
-            )}
-
-            <div className="flex gap-3">
-              <button onClick={handleRegistrar} disabled={registrando}
-                className="flex-1 text-white text-sm font-semibold py-2.5 rounded-xl
-                           transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-sm"
-                style={{ backgroundColor: '#0e7490' }}
-                onMouseEnter={e => !registrando && (e.currentTarget.style.backgroundColor = '#164e63')}
-                onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}>
-                {registrando && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-                {registrando ? 'Registrando…' : 'Confirmar ingreso'}
-              </button>
-              <button onClick={() => setModalVenta(null)} disabled={registrando}
-                className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:opacity-50
-                           text-slate-700 text-sm font-semibold py-2.5 rounded-xl transition-colors">
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

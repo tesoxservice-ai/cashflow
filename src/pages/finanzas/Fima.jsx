@@ -1,22 +1,24 @@
 // pages/finanzas/Fima.jsx
-// Módulo FIMA — PROTOTIPO, todavía no enlazado a rutas ni pusheado.
-// Ruta: /finanzas/fima
+// Módulo FIMA / fondos de inversión. Ruta: /finanzas/fima
 //
-// Lleva el saldo del fondo de inversión FIMA (Galicia) por separado del
+// Lleva el saldo de cada fondo de inversión (FIMA Premium hoy; el diseño ya
+// soporta más fondos, cada uno con su saldo y movimientos) por separado del
 // saldo bancario. La plata nunca se duplica: cada movimiento categoria='fima'
 // ya impacta el banco (Galicia) como ingreso/egreso normal -- acá simplemente
 // se espeja ese mismo movimiento contra un saldo propio del fondo, que
-// arranca de un "saldo inicial" cargado a mano (tabla fima_saldo_inicial,
-// análoga a saldos_iniciales pero separada para no mezclarse con el banco).
+// arranca de un "saldo inicial" (tabla fima_saldo_inicial) y se va ajustando
+// con los rendimientos que carga Finanzas (tabla fima_rendimientos).
 //
-// Suscripción (inversión) = banco -$ / FIMA +$ (tipo 'egreso' en movimientos)
-// Rescate                 = banco +$ / FIMA -$ (tipo 'ingreso' en movimientos)
+// Suscripción (inversión) = banco -$ / fondo +$ (tipo 'egreso' en movimientos)
+// Rescate                 = banco +$ / fondo -$ (tipo 'ingreso' en movimientos)
+//
+// Los movimientos se cargan desde Cash Flow → Nuevo movimiento.
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
-import FormularioMovimiento from './components/FormularioMovimiento'
+import { construirLedgerFima, saldoFimaEn, normalizarFondos, perteneceAlFondo, saldoInicialDe } from '../../lib/fimaLedger'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -146,38 +148,43 @@ export default function Fima() {
   const navigate = useNavigate()
   const { user, perfil } = useAuth()
 
-  const [cuentas,          setCuentas]          = useState([])
+  const [fondos,           setFondos]           = useState([])
+  const [fondoSel,         setFondoSel]         = useState(null) // id del fondo elegido (null = el primero)
   const [movimientosTodos, setMovimientosTodos] = useState([])
-  const [fimaSaldoInicial, setFimaSaldoInicial] = useState(null)
+  const [saldosIniciales,  setSaldosIniciales]  = useState([])
+  const [rendimientos,     setRendimientos]     = useState([])
   const [cargando,         setCargando]         = useState(true)
   const [error,            setError]            = useState('')
-  const [mostrarForm,      setMostrarForm]      = useState(false)
-  const [modalSaldo,       setModalSaldo]       = useState(false)
+  const [modalRend,        setModalRend]        = useState(false)
+  const [borrandoRend,     setBorrandoRend]     = useState(null)
 
   const cargarTodo = useCallback(async () => {
     setCargando(true)
     setError('')
 
+    // select('*'): las tablas/columnas de fondos (fondos_inversion, fondo_id) son
+    // nuevas -- si todavía no existen en la base, no se corta la pantalla por eso.
     const [
-      { data: dataCuentas, error: e1 },
-      { data: dataMovs, error: e3 },
-      { data: dataFima, error: e4 },
+      { data: dataFondos, error: e1 },
+      { data: dataMovs, error: e2 },
+      { data: dataSaldos, error: e3 },
+      { data: dataRend, error: e4 },
     ] = await Promise.all([
-      supabase.from('cuentas').select('id, nombre, tipo, activa').eq('activa', true).order('nombre'),
-      supabase.from('movimientos')
-        .select('id, tipo, categoria, proveedor_cliente, concepto, monto_bruto, monto_neto, periodo, fecha_pago, estado, estado_proyeccion')
+      supabase.from('fondos_inversion').select('*').order('created_at', { ascending: true }),
+      supabase.from('movimientos').select('*')
         .eq('categoria', 'fima')
         .order('fecha_pago', { ascending: true, nullsFirst: false })
         .order('created_at', { ascending: true }),
-      supabase.from('fima_saldo_inicial').select('id, monto, fecha, created_at')
-        .order('fecha', { ascending: false }).order('created_at', { ascending: false }).limit(1),
+      supabase.from('fima_saldo_inicial').select('*')
+        .order('fecha', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('fima_rendimientos').select('*')
+        .order('fecha', { ascending: true }).order('created_at', { ascending: true }),
     ])
 
-    if (e1 || e3) { setError('No se pudieron cargar los datos.'); setCargando(false); return }
-    // fima_saldo_inicial puede no existir todavía (tabla nueva) -- no cortar la pantalla por eso.
-    if (e4) { setFimaSaldoInicial(null) } else { setFimaSaldoInicial(dataFima?.[0] ?? null) }
-
-    setCuentas(dataCuentas ?? [])
+    if (e2) { setError('No se pudieron cargar los datos.'); setCargando(false); return }
+    setFondos(e1 ? [] : (dataFondos ?? []))
+    setSaldosIniciales(e3 ? [] : (dataSaldos ?? []))
+    setRendimientos(e4 ? [] : (dataRend ?? []))
     setMovimientosTodos(dataMovs ?? [])
     setCargando(false)
   }, [])
@@ -186,63 +193,47 @@ export default function Fima() {
 
   const hoy = hoyISO()
 
-  // ── Movimientos FIMA, ordenados cronológicamente ──
+  // ── Fondo elegido: cada fondo tiene su propio saldo inicial, rendimientos y
+  // movimientos (ver src/lib/fimaLedger.js) ──
+  const fondosLista = useMemo(() => normalizarFondos(fondos), [fondos])
+  const fondoActivo = fondosLista.find(f => f.id === fondoSel) ?? fondosLista[0]
+
+  const fimaSaldoInicial = useMemo(
+    () => saldoInicialDe(saldosIniciales, fondoActivo, fondosLista),
+    [saldosIniciales, fondoActivo, fondosLista]
+  )
+  const rendimientosFondo = useMemo(
+    () => rendimientos.filter(r => perteneceAlFondo(r, fondoActivo, fondosLista)),
+    [rendimientos, fondoActivo, fondosLista]
+  )
+
+  // ── Movimientos del fondo, ordenados cronológicamente ──
   const movimientosFima = useMemo(
     () => movimientosTodos
-      .filter(m => m.categoria === 'fima')
+      .filter(m => perteneceAlFondo(m, fondoActivo, fondosLista))
       .map(m => ({
         ...m,
         montoEfectivo: m.estado === 'ejecutado' ? Number(m.monto_neto ?? m.monto_bruto ?? 0) : Number(m.monto_bruto ?? 0),
         subtipo: m.tipo === 'ingreso' ? 'rescate' : 'suscripcion',
       })),
-    [movimientosTodos]
+    [movimientosTodos, fondoActivo, fondosLista]
   )
 
   const saldoInicialMonto = Number(fimaSaldoInicial?.monto ?? 0)
   const saldoInicialFecha = fimaSaldoInicial?.fecha ?? null
 
-  // ── Saldo FIMA acumulado, movimiento por movimiento ──
-  // La fecha de corte del saldo inicial puede caer en cualquier punto de la
-  // línea de tiempo (antes, en medio o después de movimientos ya cargados).
-  // Los movimientos ANTERIORES a esa fecha ya están "adentro" del saldo
-  // inicial -- no hay que volver a sumarlos, sino reconstruir su saldo hacia
-  // atrás a partir del punto conocido. Los posteriores (o sin fecha de corte
-  // cargada) se suman hacia adelante como siempre.
-  const movimientosFimaConSaldo = useMemo(() => {
-    const corte = saldoInicialFecha
-    const antes   = corte ? movimientosFima.filter(m => m.fecha_pago < corte) : []
-    const despues = corte ? movimientosFima.filter(m => m.fecha_pago >= corte) : movimientosFima
-
-    // "No se cumple" queda visible (para no perder el registro) pero no
-    // mueve el saldo del fondo -- mismo criterio que usa el Cash Flow
-    // bancario para ese mismo flag.
-    const delta = m => m.estado_proyeccion === 'no_cumple' ? 0 : (m.tipo === 'egreso' ? m.montoEfectivo : -m.montoEfectivo)
-
-    let cursorAdelante = saldoInicialMonto
-    const despuesConSaldo = despues.map(m => {
-      cursorAdelante += delta(m)
-      return { ...m, saldoFima: cursorAdelante }
-    })
-
-    let cursorAtras = saldoInicialMonto
-    const antesConSaldo = [...antes].reverse().map(m => {
-      const saldoLuegoDeEste = cursorAtras
-      cursorAtras -= delta(m)
-      return { ...m, saldoFima: saldoLuegoDeEste }
-    }).reverse()
-
-    return [...antesConSaldo, ...despuesConSaldo]
-  }, [movimientosFima, saldoInicialMonto, saldoInicialFecha])
+  // ── Libro del fondo: movimientos FIMA + rendimientos, con el saldo del fondo
+  // después de cada uno. Ver src/lib/fimaLedger.js (mismo cálculo que Directorio).
+  const ledgerFima = useMemo(
+    () => construirLedgerFima({ movimientos: movimientosFima, rendimientos: rendimientosFondo, saldoInicialMonto, saldoInicialFecha }),
+    [movimientosFima, rendimientosFondo, saldoInicialMonto, saldoInicialFecha]
+  )
 
   // ── Saldo FIMA a hoy ──
-  const saldoFimaHoy = useMemo(() => {
-    let ultimo = saldoInicialMonto
-    for (const m of movimientosFimaConSaldo) {
-      if (!m.fecha_pago || m.fecha_pago > hoy) break
-      ultimo = m.saldoFima
-    }
-    return ultimo
-  }, [movimientosFimaConSaldo, saldoInicialMonto, hoy])
+  const saldoFimaHoy = useMemo(
+    () => saldoFimaEn(ledgerFima, saldoInicialMonto, hoy),
+    [ledgerFima, saldoInicialMonto, hoy]
+  )
 
   // ── Totales históricos vs. proyectados ──
   const totales = useMemo(() => {
@@ -259,45 +250,58 @@ export default function Fima() {
     })
     const sumaInversionesProy = inversionesProy.reduce((s, m) => s + m.montoEfectivo, 0)
     const sumaRescatesProy = rescatesProy.reduce((s, m) => s + m.montoEfectivo, 0)
-    return { invertidoHist, rescatadoHist, inversionesProy, rescatesProy, sumaInversionesProy, sumaRescatesProy }
-  }, [movimientosFima, hoy])
+    const rendimientoAcum = rendimientosFondo.filter(r => r.fecha <= hoy).reduce((s, r) => s + Number(r.monto), 0)
+    return { invertidoHist, rescatadoHist, inversionesProy, rescatesProy, sumaInversionesProy, sumaRescatesProy, rendimientoAcum }
+  }, [movimientosFima, rendimientosFondo, hoy])
 
   // ── Evolución mensual del saldo FIMA (histórico + 12 meses proyectados) ──
   const evolucionMensual = useMemo(() => {
     // Arranca en lo que sea más viejo: la fecha de corte del saldo inicial o
-    // el primer movimiento cargado (pueden no coincidir -- ver movimientosFimaConSaldo).
-    const fechasPiso = [saldoInicialFecha, movimientosFima[0]?.fecha_pago].filter(Boolean)
+    // el primer ítem del libro (pueden no coincidir -- ver fimaLedger).
+    const fechasPiso = [saldoInicialFecha, ledgerFima[0]?.fecha_pago].filter(Boolean)
     const inicioSerie = fechasPiso.length
       ? inicioMesDe(fechasPiso.reduce((a, b) => (a < b ? a : b)))
       : inicioMesDe(hoy)
 
     let finSerie = sumarMeses(inicioMesDe(hoy), 12)
-    const ultimaFutura = [...movimientosFima].reverse().find(m => m.fecha_pago)?.fecha_pago
-    if (ultimaFutura && inicioMesDe(ultimaFutura) > finSerie) finSerie = inicioMesDe(ultimaFutura)
+    const ultimaFecha = [...ledgerFima].reverse().find(m => m.fecha_pago)?.fecha_pago
+    if (ultimaFecha && inicioMesDe(ultimaFecha) > finSerie) finSerie = inicioMesDe(ultimaFecha)
 
     const periodos = []
     for (let p = inicioSerie; p <= finSerie; p = sumarMeses(p, 1)) periodos.push(p)
 
     let saldoCorriendo = saldoInicialMonto
-    let idxMov = 0
+    let idx = 0
     return periodos.map(periodo => {
       const finMes = sumarMeses(periodo, 1) // primer día del mes siguiente, exclusivo
-      let invertido = 0, rescatado = 0
-      while (idxMov < movimientosFimaConSaldo.length && movimientosFimaConSaldo[idxMov].fecha_pago < finMes) {
-        const m = movimientosFimaConSaldo[idxMov]
-        if (m.tipo === 'egreso') invertido += m.montoEfectivo
-        else rescatado += m.montoEfectivo
+      let invertido = 0, rescatado = 0, rendimiento = 0
+      while (idx < ledgerFima.length && ledgerFima[idx].fecha_pago < finMes) {
+        const m = ledgerFima[idx]
+        if (m.estado_proyeccion !== 'no_cumple') {
+          if (m.tipo === 'egreso') invertido += m.montoEfectivo
+          else if (m.tipo === 'ingreso') rescatado += m.montoEfectivo
+          else if (m.tipo === 'rendimiento') rendimiento += m.montoEfectivo
+        }
         saldoCorriendo = m.saldoFima
-        idxMov++
+        idx++
       }
-      return { periodo, invertido, rescatado, saldoFin: saldoCorriendo, esFuturo: periodo > inicioMesDe(hoy) }
+      return { periodo, invertido, rescatado, rendimiento, saldoFin: saldoCorriendo, esFuturo: periodo > inicioMesDe(hoy) }
     })
-  }, [movimientosFima, movimientosFimaConSaldo, saldoInicialFecha, saldoInicialMonto, hoy])
+  }, [ledgerFima, saldoInicialFecha, saldoInicialMonto, hoy])
 
   const puntosGrafico = useMemo(
     () => evolucionMensual.map(e => ({ fecha: sumarMeses(e.periodo, 1), saldo: e.saldoFin })),
     [evolucionMensual]
   )
+
+  async function handleBorrarRendimiento(id) {
+    if (!window.confirm('¿Borrar este rendimiento? El saldo FIMA vuelve a ser el de antes de cargarlo.')) return
+    setBorrandoRend(id)
+    const { error: err } = await supabase.from('fima_rendimientos').delete().eq('id', id)
+    setBorrandoRend(null)
+    if (err) { setError('No se pudo borrar el rendimiento.'); return }
+    await cargarTodo()
+  }
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
@@ -318,24 +322,30 @@ export default function Fima() {
             </button>
             <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">FIMA</h1>
             <p className="text-slate-400 text-sm mt-0.5">
-              Saldo del fondo de inversión, separado del saldo bancario — PROTOTIPO en prueba, todavía no pusheado.
+              Saldo de cada fondo de inversión, separado del saldo bancario. Los movimientos se cargan desde Cash Flow → Nuevo movimiento.
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <button onClick={() => setModalSaldo(true)}
-              className="text-sm font-semibold px-4 py-2.5 rounded-xl border transition-colors"
-              style={{ borderColor: '#c4b5fd', color: '#7c3aed', backgroundColor: '#f5f3ff' }}>
-              {fimaSaldoInicial ? 'Actualizar saldo inicial' : 'Cargar saldo inicial'}
-            </button>
-            <button onClick={() => setMostrarForm(v => !v)}
-              className="inline-flex items-center gap-2 text-white text-sm font-semibold
-                         px-4 py-2.5 rounded-xl transition-colors shadow-sm"
-              style={{ backgroundColor: '#7c3aed' }}
-              onMouseEnter={e => e.currentTarget.style.backgroundColor = '#6d28d9'}
-              onMouseLeave={e => e.currentTarget.style.backgroundColor = '#7c3aed'}>
-              {mostrarForm ? 'Cancelar' : '+ Nuevo movimiento FIMA'}
-            </button>
-          </div>
+          <button onClick={() => setModalRend(true)}
+            className="text-sm font-semibold px-4 py-2.5 rounded-xl border transition-colors"
+            style={{ borderColor: '#fcd34d', color: '#b45309', backgroundColor: '#fffbeb' }}>
+            Actualizar saldo
+          </button>
+        </div>
+
+        {/* Fondos: uno por solapa. Con un solo fondo queda su nombre bien visible. */}
+        <div className="flex items-center gap-2 mb-6 flex-wrap">
+          {fondosLista.map(f => {
+            const activo = f.id === fondoActivo.id
+            return (
+              <button key={f.id ?? 'por-defecto'} onClick={() => setFondoSel(f.id)}
+                disabled={fondosLista.length === 1}
+                className={`px-4 py-2 rounded-xl text-sm font-bold border transition-colors disabled:cursor-default
+                  ${activo ? 'text-white border-transparent' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                style={activo ? { backgroundColor: '#7c3aed' } : {}}>
+                {f.nombre}
+              </button>
+            )
+          })}
         </div>
 
         {error && (
@@ -351,11 +361,10 @@ export default function Fima() {
               <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
             </svg>
             <div>
-              <p className="font-medium">Todavía no cargaste un saldo inicial del FIMA.</p>
+              <p className="font-medium">{fondoActivo.nombre} todavía no tiene saldo inicial cargado.</p>
               <p className="text-xs mt-1 text-amber-700">
-                Hasta que lo cargues, el saldo de acá abajo solo refleja los movimientos FIMA registrados, sin el
-                punto de partida real del fondo. Usá "Cargar saldo inicial" con el monto y la fecha de corte que
-                tengas en el resumen de Galicia (antes del primer movimiento FIMA cargado).
+                El saldo de acá abajo arranca en $0 y solo refleja los movimientos y rendimientos registrados,
+                sin el punto de partida real del fondo.
               </p>
             </div>
           </div>
@@ -368,32 +377,20 @@ export default function Fima() {
           </div>
         ) : (
           <>
-            {/* Formulario nuevo movimiento FIMA */}
-            {mostrarForm && (
-              <div className="mb-6">
-                <FormularioMovimiento
-                  obras={[]} rubros={[]} cuentas={cuentas} debitos={[]}
-                  userId={user.id}
-                  categoriaInicial="fima"
-                  onGuardado={async () => { setMostrarForm(false); await cargarTodo() }}
-                  onCancelar={() => setMostrarForm(false)}
-                />
-              </div>
-            )}
-
-            {/* Card: saldo FIMA. El saldo bancario se mira en el Cash Flow
+            {/* Card: saldo del fondo. El saldo bancario se mira en el Cash Flow
                 (acá no se duplica ese cálculo para que no haya dos
                 números distintos del mismo dato). */}
             <div className="bg-white border border-violet-100 rounded-2xl p-5 shadow-sm mb-6 max-w-sm">
-              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: '#7c3aed' }}>Saldo FIMA</p>
+              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: '#7c3aed' }}>Saldo {fondoActivo.nombre}</p>
               <p className="text-slate-900 text-2xl font-extrabold tabular-nums mt-1.5">{fmtARS(saldoFimaHoy)}</p>
               <p className="text-slate-400 text-xs mt-1">Plata invertida en el fondo hoy — no es dinero disponible en el banco</p>
             </div>
 
             {/* Cards: totales */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
               <CardMini label="Total invertido" sub="histórico" valor={fmtARS(totales.invertidoHist)} color="#7c3aed" />
               <CardMini label="Total rescatado" sub="histórico" valor={fmtARS(totales.rescatadoHist)} color="#0e7490" />
+              <CardMini label="Rendimientos acumulados" sub="cargados hasta hoy" valor={fmtARS(totales.rendimientoAcum)} color={totales.rendimientoAcum >= 0 ? '#b45309' : '#dc2626'} />
               <CardMini label="Inversiones proyectadas" sub={`${totales.inversionesProy.length} movimiento(s) a futuro`} valor={fmtARS(totales.sumaInversionesProy)} color="#7c3aed" />
               <CardMini label="Rescates proyectados" sub={`${totales.rescatesProy.length} movimiento(s) a futuro`} valor={fmtARS(totales.sumaRescatesProy)} color="#0e7490" />
             </div>
@@ -402,7 +399,7 @@ export default function Fima() {
             <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-6 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <div>
-                  <h2 className="text-slate-800 font-bold text-sm">Evolución del saldo FIMA</h2>
+                  <h2 className="text-slate-800 font-bold text-sm">Evolución del saldo — {fondoActivo.nombre}</h2>
                   <p className="text-slate-400 text-xs mt-0.5">Fin de cada mes — histórico y proyectado a 12 meses</p>
                 </div>
               </div>
@@ -421,6 +418,7 @@ export default function Fima() {
                       <Th>Período</Th>
                       <Th align="right">Inversiones del mes</Th>
                       <Th align="right">Rescates del mes</Th>
+                      <Th align="right">Rendimientos del mes</Th>
                       <Th align="right">Saldo FIMA al cierre</Th>
                       <Th align="center">Estado</Th>
                     </tr>
@@ -431,6 +429,7 @@ export default function Fima() {
                         <td className="px-4 py-3 text-slate-700 font-semibold">{labelPeriodo(e.periodo)}</td>
                         <td className="px-4 py-3 text-right tabular-nums text-violet-600">{e.invertido > 0 ? fmtARS(e.invertido) : '—'}</td>
                         <td className="px-4 py-3 text-right tabular-nums text-cyan-700">{e.rescatado > 0 ? fmtARS(e.rescatado) : '—'}</td>
+                        <td className={`px-4 py-3 text-right tabular-nums ${e.rendimiento < 0 ? 'text-red-600' : 'text-amber-700'}`}>{e.rendimiento !== 0 ? fmtARS(e.rendimiento) : '—'}</td>
                         <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-900">{fmtARS(e.saldoFin)}</td>
                         <td className="px-4 py-3 text-center">
                           <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full
@@ -448,17 +447,17 @@ export default function Fima() {
             {/* Detalle de movimientos */}
             <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
               <div className="px-5 py-4 border-b border-slate-100">
-                <h2 className="text-slate-800 font-bold text-sm">Detalle de movimientos FIMA</h2>
+                <h2 className="text-slate-800 font-bold text-sm">Detalle de movimientos — {fondoActivo.nombre}</h2>
                 <p className="text-slate-400 text-xs mt-0.5">
                   {fimaSaldoInicial
                     ? `Saldo inicial: ${fmtARS(saldoInicialMonto)} al ${fmtFecha(saldoInicialFecha)}`
                     : 'Sin saldo inicial cargado — el saldo acumulado de abajo arranca en $0'}
                 </p>
               </div>
-              {movimientosFimaConSaldo.length === 0 ? (
+              {ledgerFima.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-14 text-center">
-                  <p className="text-slate-600 font-bold text-sm">Sin movimientos FIMA todavía</p>
-                  <p className="text-slate-400 text-xs mt-1">Usá "+ Nuevo movimiento FIMA" para cargar el primero.</p>
+                  <p className="text-slate-600 font-bold text-sm">Sin movimientos todavía</p>
+                  <p className="text-slate-400 text-xs mt-1">Los movimientos del fondo se cargan desde Cash Flow → Nuevo movimiento.</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -474,13 +473,15 @@ export default function Fima() {
                       </tr>
                     </thead>
                     <tbody>
-                      {movimientosFimaConSaldo.map(m => (
+                      {ledgerFima.map(m => (
                         <tr key={m.id} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors">
                           <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{fmtFecha(m.fecha_pago)}</td>
                           <td className="px-4 py-3">
                             <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full
-                              ${m.subtipo === 'suscripcion' ? 'bg-violet-50 text-violet-700 border border-violet-100' : 'bg-cyan-50 text-cyan-700 border border-cyan-100'}`}>
-                              {m.subtipo === 'suscripcion' ? 'Suscripción (inversión)' : 'Rescate'}
+                              ${m.subtipo === 'suscripcion' ? 'bg-violet-50 text-violet-700 border border-violet-100'
+                                : m.subtipo === 'rendimiento' ? 'bg-amber-50 text-amber-700 border border-amber-100'
+                                : 'bg-cyan-50 text-cyan-700 border border-cyan-100'}`}>
+                              {m.subtipo === 'suscripcion' ? 'Suscripción (inversión)' : m.subtipo === 'rendimiento' ? 'Rendimiento' : 'Rescate'}
                             </span>
                           </td>
                           <td className="px-4 py-3">
@@ -489,9 +490,25 @@ export default function Fima() {
                               {m.estado === 'ejecutado' ? 'Ejecutado' : 'Proyectado'}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-slate-500 text-xs">{m.proveedor_cliente ?? m.concepto ?? '—'}</td>
-                          <td className={`px-4 py-3 text-right tabular-nums font-semibold ${m.subtipo === 'suscripcion' ? 'text-violet-600' : 'text-cyan-700'}`}>
-                            {m.subtipo === 'suscripcion' ? '+' : '−'}{fmtARS(m.montoEfectivo)}
+                          <td className="px-4 py-3 text-slate-500 text-xs">
+                            {m.subtipo === 'rendimiento'
+                              ? (m.proveedor_cliente ?? 'Ajuste por rendimiento')
+                              : (m.proveedor_cliente ?? m.concepto ?? '—')}
+                            {m.subtipo === 'rendimiento' && (
+                              <button onClick={() => handleBorrarRendimiento(m._rendimientoId)}
+                                disabled={borrandoRend === m._rendimientoId}
+                                className="ml-2 text-red-500 hover:text-red-700 font-semibold disabled:opacity-50">
+                                {borrandoRend === m._rendimientoId ? 'Borrando…' : 'Borrar'}
+                              </button>
+                            )}
+                          </td>
+                          <td className={`px-4 py-3 text-right tabular-nums font-semibold
+                            ${m.subtipo === 'suscripcion' ? 'text-violet-600'
+                              : m.subtipo === 'rendimiento' ? (m.montoEfectivo < 0 ? 'text-red-600' : 'text-amber-700')
+                              : 'text-cyan-700'}`}>
+                            {m.subtipo === 'rendimiento'
+                              ? (m.montoEfectivo < 0 ? '−' : '+')
+                              : (m.subtipo === 'suscripcion' ? '+' : '−')}{fmtARS(Math.abs(m.montoEfectivo))}
                           </td>
                           <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-900">{fmtARS(m.saldoFima)}</td>
                         </tr>
@@ -505,12 +522,14 @@ export default function Fima() {
         )}
       </main>
 
-      {modalSaldo && (
-        <ModalSaldoFima
-          saldoActual={fimaSaldoInicial}
+      {modalRend && (
+        <ModalRendimiento
+          fondo={fondoActivo}
+          saldoEsperadoEn={fecha => saldoFimaEn(ledgerFima, saldoInicialMonto, fecha)}
+          hayIniciales={!!fimaSaldoInicial}
           userId={user.id}
-          onCerrar={() => setModalSaldo(false)}
-          onGuardado={async () => { setModalSaldo(false); await cargarTodo() }}
+          onCerrar={() => setModalRend(false)}
+          onGuardado={async () => { setModalRend(false); await cargarTodo() }}
         />
       )}
     </div>
@@ -538,24 +557,34 @@ function Th({ children, align = 'left' }) {
   )
 }
 
-// ─── Modal saldo inicial FIMA ──────────────────────────────────────────────────
+// ─── Modal actualizar saldo del fondo ──────────────────────────────────────────
+// Finanzas ingresa el saldo real que muestra Galicia; la diferencia con lo que
+// calcula el sistema se registra como rendimiento. El rendimiento sube (o baja)
+// el saldo del fondo sin mover plata en el banco.
 
-function ModalSaldoFima({ saldoActual, userId, onCerrar, onGuardado }) {
-  const [monto,     setMonto]     = useState(saldoActual ? String(saldoActual.monto) : '')
-  const [fecha,     setFecha]     = useState(saldoActual?.fecha ?? new Date().toISOString().split('T')[0])
+function ModalRendimiento({ fondo, hayIniciales, saldoEsperadoEn, userId, onCerrar, onGuardado }) {
+  const [valor,     setValor]     = useState('')
+  const [fecha,     setFecha]     = useState(hoyISO())
+  const [nota,      setNota]      = useState('')
   const [guardando, setGuardando] = useState(false)
   const [error,     setError]     = useState('')
 
+  const esperado = saldoEsperadoEn(fecha)
+  const numero = valor === '' ? null : Number(valor)
+  const valido = numero !== null && !isNaN(numero)
+  const rendimiento = valido ? Math.round((numero - esperado) * 100) / 100 : null
+
   async function handleGuardar(e) {
     e.preventDefault(); setError('')
-    if (!monto || isNaN(Number(monto))) { setError('Ingresá un monto válido.'); return }
-    if (!fecha) { setError('Ingresá una fecha de corte.'); return }
+    if (!fecha) { setError('Ingresá la fecha.'); return }
+    if (!valido) { setError('Ingresá el saldo real del fondo.'); return }
+    if (rendimiento === 0) { setError('No hay diferencia: el saldo que ingresaste ya coincide con el del sistema.'); return }
     setGuardando(true)
-    const { error: err } = await supabase.from('fima_saldo_inicial').insert({
-      monto: Number(monto), fecha, created_by: userId,
-    })
+    const fila = { fecha, monto: rendimiento, nota: nota.trim() || null, created_by: userId }
+    if (fondo.id) fila.fondo_id = fondo.id
+    const { error: err } = await supabase.from('fima_rendimientos').insert(fila)
     setGuardando(false)
-    if (err) { setError('Error al guardar. Revisá que la tabla fima_saldo_inicial ya exista en Supabase.'); return }
+    if (err) { setError('No se pudo guardar. Revisá que la tabla fima_rendimientos ya exista en Supabase.'); return }
     onGuardado()
   }
 
@@ -564,10 +593,10 @@ function ModalSaldoFima({ saldoActual, userId, onCerrar, onGuardado }) {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
         <div className="flex items-start justify-between mb-4">
           <div>
-            <h3 className="text-slate-900 font-extrabold text-base">
-              {saldoActual ? 'Actualizar saldo inicial FIMA' : 'Cargar saldo inicial FIMA'}
-            </h3>
-            <p className="text-slate-400 text-sm mt-0.5">Punto de partida del fondo, desde el que se suman/restan los movimientos FIMA.</p>
+            <h3 className="text-slate-900 font-extrabold text-base">Actualizar saldo — {fondo.nombre}</h3>
+            <p className="text-slate-400 text-sm mt-0.5">
+              Ingresá el saldo real que muestra Galicia. La diferencia se registra como rendimiento y no mueve plata en el banco.
+            </p>
           </div>
           <button onClick={onCerrar} className="text-slate-300 hover:text-slate-500 transition-colors mt-0.5">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -576,37 +605,49 @@ function ModalSaldoFima({ saldoActual, userId, onCerrar, onGuardado }) {
           </button>
         </div>
 
+        {!hayIniciales && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+            Este fondo todavía no tiene saldo inicial: el saldo que calcula el sistema arranca en $0.
+          </p>
+        )}
+
         <form onSubmit={handleGuardar} noValidate className="space-y-4">
           <div>
-            <label className={lbCls}>
-              Monto {saldoActual && <span className="text-slate-300 font-normal ml-1">(anterior: {fmtARS(saldoActual.monto)})</span>}
-            </label>
-            <input type="number" step="0.01" placeholder="0,00"
-              value={monto} onChange={e => setMonto(e.target.value)} className={inCls} autoFocus />
+            <label className={lbCls}>Fecha</label>
+            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} className={inCls} />
           </div>
           <div>
-            <label className={lbCls}>Fecha de corte</label>
-            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} className={inCls} />
-            <p className="text-slate-400 text-[11px] mt-1">
-              Lo ideal es que sea anterior al primer movimiento FIMA cargado, así no queda ningún movimiento sin cuenta.
-            </p>
+            <label className={lbCls}>Saldo real del fondo (según Galicia)</label>
+            <input type="number" step="0.01" placeholder="0,00" value={valor}
+              onChange={e => setValor(e.target.value)} className={inCls} autoFocus />
+            <p className="text-slate-400 text-[11px] mt-1">El sistema calcula al {fmtFecha(fecha)}: {fmtARS(esperado)}</p>
           </div>
+          <div>
+            <label className={lbCls}>Nota <span className="font-normal text-slate-300">(opcional)</span></label>
+            <input type="text" placeholder="Ej: rendimiento al 02/10" value={nota}
+              onChange={e => setNota(e.target.value)} className={inCls} />
+          </div>
+
+          {rendimiento !== null && (
+            <div className={`rounded-xl px-3 py-2.5 text-sm font-semibold ${rendimiento === 0 ? 'bg-slate-50 text-slate-500' : rendimiento > 0 ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-700'}`}>
+              Rendimiento a registrar: {rendimiento > 0 ? '+' : rendimiento < 0 ? '−' : ''}{fmtARS(Math.abs(rendimiento))}
+              <span className="block text-[11px] font-normal mt-0.5">
+                Saldo al {fmtFecha(fecha)} quedaría en {fmtARS(esperado + rendimiento)}
+              </span>
+            </div>
+          )}
 
           {error && <p className="text-red-600 text-xs">{error}</p>}
 
           <div className="flex gap-3 pt-1">
             <button type="submit" disabled={guardando}
-              className="flex-1 text-white text-sm font-semibold py-2.5 rounded-xl
-                         transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-sm"
-              style={{ backgroundColor: '#7c3aed' }}
-              onMouseEnter={e => !guardando && (e.currentTarget.style.backgroundColor = '#6d28d9')}
-              onMouseLeave={e => e.currentTarget.style.backgroundColor = '#7c3aed'}>
+              className="flex-1 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-sm"
+              style={{ backgroundColor: '#b45309' }}>
               {guardando && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
               {guardando ? 'Guardando…' : 'Guardar'}
             </button>
             <button type="button" onClick={onCerrar} disabled={guardando}
-              className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:opacity-50
-                         text-slate-700 text-sm font-semibold py-2.5 rounded-xl transition-colors">
+              className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 text-sm font-semibold py-2.5 rounded-xl transition-colors">
               Cancelar
             </button>
           </div>

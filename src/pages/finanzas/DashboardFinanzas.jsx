@@ -26,14 +26,6 @@ const IconCashFlow = () => (
   </svg>
 )
 
-const IconMovimientos = () => (
-  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round"
-      d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0
-         0L16.5 12M21 7.5H7.5" />
-  </svg>
-)
-
 const IconVentas = () => (
   <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round"
@@ -324,15 +316,9 @@ export default function DashboardFinanzas() {
     },
     {
       titulo: 'Cash Flow',
-      descripcion: 'Proyección y seguimiento de ingresos y egresos por período.',
+      descripcion: 'Proyección y seguimiento de ingresos y egresos por período. Acá también se cargan los movimientos nuevos.',
       icono: <IconCashFlow />,
       ruta: '/finanzas/cashflow',
-    },
-    {
-      titulo: 'Movimientos',
-      descripcion: 'Carga facturas, pagos y movimientos entre cuentas.',
-      icono: <IconMovimientos />,
-      ruta: '/finanzas/movimientos',
     },
     {
       titulo: 'Ventas Proyectadas',
@@ -354,7 +340,7 @@ export default function DashboardFinanzas() {
     },
     {
       titulo: 'FIMA',
-      descripcion: 'Saldo del fondo de inversión, separado del saldo bancario, con evolución proyectada. (Prototipo)',
+      descripcion: 'Saldo del fondo de inversión, separado del saldo bancario, con rendimientos y evolución proyectada.',
       icono: <IconFima />,
       ruta: '/finanzas/fima',
     },

@@ -7,6 +7,9 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
 import SaldosIniciales from './components/SaldosIniciales'
+import FormularioMovimiento from './components/FormularioMovimiento'
+import SeccionDebitos from './components/SeccionDebitos'
+import ModalNotas from './components/ModalNotas'
 import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -271,6 +274,12 @@ export default function CashFlow() {
   const [guardandoProyeccion, setGuardandoProyeccion] = useState(false)
   const [errorProyeccion,     setErrorProyeccion]     = useState('')
 
+  const [debitos,        setDebitos]        = useState([])
+  const [fondos,         setFondos]         = useState([])
+  const [mostrarFormMov, setMostrarFormMov] = useState(false)
+  const [modalNotas,     setModalNotas]     = useState(null)
+  const [mostrarDebitos, setMostrarDebitos] = useState(false)
+
   const [filaEditandoFecha,  setFilaEditandoFecha]  = useState(null)
   const [nuevaFechaEstimada, setNuevaFechaEstimada]  = useState('')
   const [nuevoConceptoVenta, setNuevoConceptoVenta]  = useState('')
@@ -310,6 +319,26 @@ export default function CashFlow() {
   }, [])
 
   useEffect(() => { cargarVentasProyectadas() }, [cargarVentasProyectadas])
+
+  // Débitos automáticos activos: alimentan la categoría "Débito automático"
+  // del formulario de Nuevo movimiento.
+  const cargarDebitos = useCallback(async () => {
+    const { data } = await supabase
+      .from('debitos_automaticos_config')
+      .select('id, nombre, monto_estimado, dia_del_mes, rubro_id, obra_id')
+      .eq('activo', true)
+      .order('nombre')
+    setDebitos(data ?? [])
+  }, [])
+
+  useEffect(() => { cargarDebitos() }, [cargarDebitos])
+
+  // Fondos de inversión: para elegir el fondo en los movimientos FIMA. Si la
+  // tabla todavía no existe en la base, queda vacío y el formulario se comporta como antes.
+  useEffect(() => {
+    supabase.from('fondos_inversion').select('id, nombre, activo').eq('activo', true).order('created_at')
+      .then(({ data, error }) => setFondos(error ? [] : (data ?? [])))
+  }, [])
 
   const cargarFechasEstimadasGasto = useCallback(async () => {
     const { data } = await supabase
@@ -759,22 +788,52 @@ export default function CashFlow() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
 
         {/* Encabezado */}
-        <div className="mb-8">
+        <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <button
+              onClick={() => navigate('/finanzas')}
+              className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
+              style={{ color: '#0e7490' }}
+              onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
+              onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}
+            >
+              <IconBack />
+              Panel de Finanzas
+            </button>
+            <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Cash Flow</h1>
+            <p className="text-slate-400 text-sm mt-0.5">
+              Posición financiera de la empresa — próximos {horizonte} días
+            </p>
+          </div>
+
           <button
-            onClick={() => navigate('/finanzas')}
-            className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
-            style={{ color: '#0e7490' }}
-            onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
-            onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}
+            onClick={() => setMostrarFormMov(true)}
+            className="shrink-0 inline-flex items-center gap-2 text-white text-sm font-semibold
+                       px-4 py-2.5 rounded-xl transition-colors shadow-sm"
+            style={{ backgroundColor: '#0e7490' }}
+            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
+            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}
           >
-            <IconBack />
-            Panel de Finanzas
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            Nuevo movimiento
           </button>
-          <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Cash Flow</h1>
-          <p className="text-slate-400 text-sm mt-0.5">
-            Posición financiera de la empresa — próximos {horizonte} días
-          </p>
         </div>
+
+        {/* Nuevo movimiento — en un modal para no mover el scroll de la tabla */}
+        {mostrarFormMov && (
+          <div className="fixed inset-0 bg-black/40 z-50 overflow-y-auto p-4 sm:p-8">
+            <div className="w-full max-w-5xl mx-auto">
+              <FormularioMovimiento
+                obras={obras} rubros={rubros} cuentas={cuentas} debitos={debitos} fondos={fondos}
+                userId={user.id}
+                onGuardado={async () => { setMostrarFormMov(false); await cargarMovimientos({ silencioso: true }) }}
+                onCancelar={() => setMostrarFormMov(false)}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Indicador de refresco en segundo plano (no tapa la pantalla ni mueve el scroll) */}
         {actualizando && (
@@ -964,6 +1023,7 @@ export default function CashFlow() {
               onGuardarEdicion={handleGuardarEdicion}
               onCancelarEdicion={handleCancelarEdicion}
               onBorrarEdicion={handleBorrarEdicion}
+              onNotas={mov => setModalNotas(mov)}
               filaAjustando={filaAjustando}
               valorAjuste={valorAjuste}
               guardandoAjuste={guardandoAjuste}
@@ -1013,7 +1073,37 @@ export default function CashFlow() {
             </div>
           </>
         )}
+
+        {/* Configuración de débitos automáticos (plegable: casi no se toca) */}
+        <div className="mt-10">
+          <button
+            onClick={() => setMostrarDebitos(v => !v)}
+            className="w-full flex items-center justify-between bg-white border border-slate-100
+                       rounded-2xl px-5 py-3.5 shadow-sm hover:bg-slate-50/60 transition-colors"
+          >
+            <span className="text-sm font-bold text-slate-700">
+              Débitos automáticos
+              <span className="text-xs font-normal text-slate-400 ml-2">configuración de servicios recurrentes</span>
+            </span>
+            <span className={`transition-transform duration-200 text-slate-400 ${mostrarDebitos ? 'rotate-180' : ''}`}>
+              <IconChevronDown />
+            </span>
+          </button>
+          {mostrarDebitos && (
+            <SeccionDebitos
+              debitos={debitos} rubros={rubros} obras={obras} userId={user.id}
+              onActualizado={cargarDebitos}
+            />
+          )}
+        </div>
       </main>
+
+      {modalNotas && (
+        <ModalNotas
+          movimiento={modalNotas} userId={user.id}
+          onCerrar={() => { setModalNotas(null); cargarMovimientos({ silencioso: true }) }}
+        />
+      )}
     </div>
   )
 }
@@ -1023,7 +1113,7 @@ export default function CashFlow() {
 function TablaCashFlow({
   filas, saldoInicial, obras, rubros,
   filaEditando, valoresEdicion, guardandoEdicion, errorEdicion,
-  onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion, onBorrarEdicion,
+  onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion, onBorrarEdicion, onNotas,
   filaAjustando, valorAjuste, guardandoAjuste, errorAjuste,
   onIniciarAjuste, onCambiarAjuste, onGuardarAjuste, onCancelarAjuste,
   filaProyeccion, nuevaFechaProyeccion, guardandoProyeccion, errorProyeccion,
@@ -1089,6 +1179,7 @@ function TablaCashFlow({
                     onGuardar={() => onGuardarEdicion(m.id)}
                     onCancelar={onCancelarEdicion}
                     onBorrar={() => onBorrarEdicion(m.id)}
+                    onNotas={() => onNotas(m)}
                   />
                 )
               }
@@ -1534,7 +1625,7 @@ function FilaEditarFechaEstimada({ mov, nuevaFecha, nuevoConcepto, guardando, er
   )
 }
 
-function FilaEdicionMovimiento({ mov, obras, rubros, valores, guardando, error, onChange, onGuardar, onCancelar, onBorrar }) {
+function FilaEdicionMovimiento({ mov, obras, rubros, valores, guardando, error, onChange, onGuardar, onCancelar, onBorrar, onNotas }) {
   const rubrosFiltrados = (rubros ?? []).filter(r =>
     r.activo && RUBROS_PERMITIDOS_FINANZAS.includes(r.nombre)
     && (valores.obra_id ? r.tipo === 'obra' : r.tipo === 'general')
@@ -1618,6 +1709,17 @@ function FilaEdicionMovimiento({ mov, obras, rubros, valores, guardando, error, 
         <div className="flex items-center gap-2 mt-3">
           {error && <span className="text-xs text-red-600 font-medium">{error}</span>}
           <div className="flex items-center gap-2 ml-auto">
+            {mov.categoria === 'factura' && (
+              <button
+                onClick={onNotas}
+                disabled={guardando}
+                title="Notas de débito / crédito de esta factura"
+                className="px-3 py-2 text-sm font-medium text-cyan-700 hover:text-cyan-900
+                          transition-colors disabled:opacity-50"
+              >
+                Notas de débito/crédito
+              </button>
+            )}
             <button
               onClick={onBorrar}
               disabled={guardando}

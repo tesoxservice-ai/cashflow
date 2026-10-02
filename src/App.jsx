@@ -10,7 +10,6 @@ import PresupuestoVsRealOperaciones from './pages/operaciones/PresupuestoVsReal'
 import VentasProyectadasOp          from './pages/operaciones/VentasProyectadas'
 import DashboardFinanzas            from './pages/finanzas/DashboardFinanzas'
 import Obras                        from './pages/finanzas/Obras'
-import Movimientos                  from './pages/finanzas/Movimientos'
 import CashFlow                     from './pages/finanzas/CashFlow'
 import PresupuestoVsReal            from './pages/finanzas/PresupuestoVsReal'
 import VentasProyectadasFin         from './pages/finanzas/VentasProyectadas'
@@ -51,9 +50,6 @@ export default function App() {
       } />
       <Route path="/finanzas/obras" element={
         <ProtectedRoute rolRequerido="finanzas"><Obras /></ProtectedRoute>
-      } />
-      <Route path="/finanzas/movimientos" element={
-        <ProtectedRoute rolRequerido="finanzas"><Movimientos /></ProtectedRoute>
       } />
       <Route path="/finanzas/cashflow" element={
         <ProtectedRoute rolRequerido="finanzas"><CashFlow /></ProtectedRoute>
