@@ -9,32 +9,18 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import GraficoCashflow from './GraficoCashflow'
+import { BarraEscenarios, PanelFecha, AlertasEscenario } from './PanelEscenarios'
+import { useEscenarios, useFimaDatos, construirBase, simular, opcionesMetrica, serieMetrica, COLORES_ESCENARIO } from './escenarios'
 import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
-import { construirLedgerFima, saldoFimaEn, normalizarFondos, perteneceAlFondo, saldoInicialDe } from '../../lib/fimaLedger'
+import {
+  fmtARS, fmtFecha, hoyISO, fechaFutura,
+  CARD, TONOS, Icono, ICONOS, ico, CardResumen,
+} from './utilsDirectorio'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const fmtARS = n => new Intl.NumberFormat('es-AR', {
-  style: 'currency', currency: 'ARS', minimumFractionDigits: 2,
-}).format(n ?? 0)
-
 const fmtPct = pct => `${pct.toFixed(1)}%`
-
-function fmtFecha(str) {
-  if (!str) return '—'
-  return new Date(str + 'T00:00:00').toLocaleDateString('es-AR')
-}
-
-function hoyISO() {
-  const h = new Date()
-  return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-${String(h.getDate()).padStart(2, '0')}`
-}
-
-function fechaFutura(dias) {
-  const d = new Date()
-  d.setDate(d.getDate() + dias)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
 
 function periodoActual() {
   const h = new Date()
@@ -813,7 +799,7 @@ function TabCashFlow() {
         id, tipo, categoria, proveedor_cliente, numero_factura,
         monto_bruto, monto_neto, concepto,
         periodo, fecha_pago, estado, cuenta_id, obra_id, rubro_id, created_at,
-        estado_proyeccion, fecha_pago_original,
+        estado_proyeccion, fecha_pago_original, fondo_id,
         obras   ( id, codigo, nombre ),
         rubros  ( id, nombre ),
         cuentas ( id, nombre )
@@ -969,14 +955,49 @@ function TabCashFlow() {
     return { max, min }
   }, [filasFiltradas])
 
-  // Puntos para el grafico: arranca hoy (con el saldo de hoy como ancla)
-  // y sigue con el saldo acumulado de cada movimiento futuro filtrado.
-  const puntosGrafico = useMemo(() => {
-    const hoy = hoyISO()
-    const puntos = [{ fecha: hoy, saldo: cards.saldoHoy }]
-    filasFiltradas.forEach(m => puntos.push({ fecha: m.fecha_pago ?? m.periodo, saldo: m.saldoAcumulado }))
-    return puntos
-  }, [filasFiltradas, cards.saldoHoy])
+  // ── Escenarios (simulación sobre el gráfico; no escribe nada en la base) ──
+  const hoy = hoyISO()
+  const fima = useFimaDatos()
+  const esc = useEscenarios()
+  const [metricaSel, setMetrica] = useState('banco') // 'banco' | 'f:<fondo>' | 'total'
+  const [fechaSelRaw, setFechaSel] = useState(null)
+
+  const base = useMemo(() => {
+    if (!fima.cargado) return null
+    return construirBase({
+      hoy,
+      movimientos: movimientosConSaldo,
+      sumaBase: saldosBase.reduce((acc, s) => acc + Number(s.monto ?? 0), 0),
+      fondos: fima.fondos, saldosFima: fima.saldos, rendimientos: fima.rendimientos,
+    })
+  }, [fima, movimientosConSaldo, saldosBase, hoy])
+
+  const resultados = useMemo(() => {
+    if (!base) return null
+    const r = { actual: simular(base, null) }
+    esc.escenarios.forEach(e => { r[e.id] = simular(base, e) })
+    return r
+  }, [base, esc.escenarios])
+
+  const colorDe = id => COLORES_ESCENARIO[Math.max(0, esc.escenarios.findIndex(e => e.id === id)) % COLORES_ESCENARIO.length]
+  const nRango = horizonte + 1
+  const fechaSel = base && fechaSelRaw && base.fechas.indexOf(fechaSelRaw) >= 0 && base.fechas.indexOf(fechaSelRaw) < nRango ? fechaSelRaw : null
+  const hayEscenarios = esc.escenarios.length > 0
+  // Resultado del escenario activo (null si se mira lo real) y sus puntos más alto y más bajo de caja.
+  const vistaEsc = esc.activo && resultados ? resultados[esc.activo.id] : null
+  const extremosDe = r => {
+    if (!r || !base) return null
+    let mx = 0, mn = 0
+    for (let i = 1; i < nRango; i++) {
+      if (r.banco[i] > r.banco[mx]) mx = i
+      if (r.banco[i] < r.banco[mn]) mn = i
+    }
+    return { max: { valor: r.banco[mx], fecha: base.fechas[mx] }, min: { valor: r.banco[mn], fecha: base.fechas[mn] } }
+  }
+  const extremosEsc = extremosDe(vistaEsc)
+  const extremosReal = extremosDe(resultados?.actual)
+  const opcionesM = base ? opcionesMetrica(base) : []
+  const metrica = opcionesM.some(o => o.id === metricaSel) ? metricaSel : 'banco'
 
   const totales = useMemo(() => {
     let ingresos = 0, egresos = 0
@@ -1004,57 +1025,133 @@ function TabCashFlow() {
         </div>
       ) : (
         <>
-          {/* Gráfico — lo primero que se ve, sin scroll */}
+          {/* Gráfico — lo primero que se ve, sin scroll. Tocando una fecha se simulan escenarios. */}
           <div className={`${CARD} p-5 sm:p-6`}>
             <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
               <div>
                 <h2 className="text-slate-900 font-bold text-base flex items-center gap-2">
                   Evolución del saldo proyectado
                   <span className="text-slate-300 cursor-help"
-                    title="Saldo acumulado: lo que hay hoy en el banco, más los ingresos y egresos reales y proyectados de cada fecha.">
+                    title="Saldo acumulado: lo que hay hoy en el banco, más los ingresos y egresos reales y proyectados de cada fecha. Tocá una fecha del gráfico para simular escenarios con FIMA o pagos que no se cumplen.">
                     <Icono {...ICONOS.info} className="w-4 h-4" />
                   </span>
                 </h2>
                 <p className="text-slate-400 text-xs mt-1">
-                  Desde el {fmtFecha(hoyISO())} hasta {fmtFecha(fechaFutura(horizonte))}
+                  {opcionesM.find(o => o.id === metrica)?.titulo ?? 'Caja (bancos)'} · desde el {fmtFecha(hoyISO())} hasta {fmtFecha(fechaFutura(horizonte))}
                 </p>
               </div>
-              <div className="inline-flex max-w-full rounded-xl border border-slate-200 bg-slate-50/70 p-0.5 text-[11px] sm:text-xs font-semibold">
-                {[[30, '30 días'], [60, '60 días'], [90, '90 días'], [180, '6 meses'], [365, '1 año']].map(([dias, texto]) => (
-                  <button key={dias} onClick={() => setHorizonte(dias)}
-                    className={`px-2 sm:px-3 py-1.5 rounded-[10px] whitespace-nowrap transition-colors
-                      ${horizonte === dias ? 'bg-emerald-100 text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-                    {texto}
-                  </button>
-                ))}
+              <div className="flex items-center gap-2 flex-wrap">
+                {hayEscenarios && (
+                  <div className="inline-flex max-w-full flex-wrap rounded-xl border border-slate-200 bg-slate-50/70 p-0.5 text-[11px] sm:text-xs font-semibold">
+                    {opcionesM.map(({ id: v, texto }) => (
+                      <button key={v} onClick={() => setMetrica(v)}
+                        className={`px-2 sm:px-3 py-1.5 rounded-[10px] whitespace-nowrap transition-colors
+                          ${metrica === v ? 'bg-emerald-100 text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                        {texto}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="inline-flex max-w-full rounded-xl border border-slate-200 bg-slate-50/70 p-0.5 text-[11px] sm:text-xs font-semibold">
+                  {[[30, '30 días'], [60, '60 días'], [90, '90 días'], [180, '6 meses'], [365, '1 año']].map(([dias, texto]) => (
+                    <button key={dias} onClick={() => setHorizonte(dias)}
+                      className={`px-2 sm:px-3 py-1.5 rounded-[10px] whitespace-nowrap transition-colors
+                        ${horizonte === dias ? 'bg-emerald-100 text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                      {texto}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-            <GraficoSaldo puntos={puntosGrafico} />
+
+            {base && resultados ? (
+              <>
+                <BarraEscenarios esc={esc} base={base} colorDe={colorDe} />
+                <GraficoCashflow
+                  fechas={base.fechas.slice(0, nRango)}
+                  actual={serieMetrica(resultados.actual, metrica).slice(0, nRango)}
+                  activa={esc.activo ? { nombre: esc.activo.nombre, valores: serieMetrica(resultados[esc.activo.id], metrica).slice(0, nRango) } : null}
+                  extras={esc.escenarios
+                    .filter(e => e.id !== esc.activoId && esc.visibles.includes(e.id))
+                    .map(e => ({ id: e.id, nombre: e.nombre, color: colorDe(e.id), valores: serieMetrica(resultados[e.id], metrica).slice(0, nRango) }))}
+                  fechaSel={fechaSel}
+                  onSelect={f => setFechaSel(prev => (prev === f ? null : f))} />
+                {hayEscenarios && metrica === 'total' && (
+                  <p className="text-xs text-slate-400 mt-3 leading-relaxed">
+                    Invertir o rescatar solo mueve plata entre la caja y cada fondo, por eso la posición total no cambia (la simulación no proyecta rendimientos).
+                    Mirá <b className="text-slate-500">Caja</b> o cada fondo por separado para ver el efecto. Marcar un pago como "no se cumple" sí cambia la posición total.
+                  </p>
+                )}
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-48 text-slate-400 text-sm gap-3">
+                <span className="w-4 h-4 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" /> Cargando…
+              </div>
+            )}
           </div>
 
-          {/* Cards de posición */}
+          {fechaSel && base && resultados && (
+            <PanelFecha fecha={fechaSel} hoy={hoy} base={base} esc={esc} resultados={resultados} onCerrar={() => setFechaSel(null)} />
+          )}
+
+          {vistaEsc && base && <AlertasEscenario base={base} alertas={vistaEsc.alertas} />}
+
+          {/* Cards de posición: siguen al escenario activo (si no hay ninguno, son lo real) */}
+          {esc.activo && base && resultados && (
+            <div className="flex items-center justify-between gap-3 flex-wrap rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+              <p className="text-sm text-emerald-900">
+                Estás viendo los números de <b>{esc.activo.nombre}</b>: es una simulación, no lo real.
+                <span className="text-emerald-800/70"> Debajo de cada valor ves la diferencia contra lo real.</span>
+              </p>
+              <button onClick={() => esc.setActivoId('actual')}
+                className="px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-white border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors">
+                Volver a lo real
+              </button>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-            <CardResumen label="Saldo disponible hoy" valor={fmtARS(cards.saldoHoy)} icono={ico('billetera')} tono="teal"
-              color={cards.saldoHoy >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel="Todas las cuentas al día de hoy" />
-            <CardResumen label="Posición a 30 días" valor={fmtARS(cards.pos30)} icono={ico('tendencia')} tono="teal"
-              color={cards.pos30 >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(30))}`} />
-            <CardResumen label="Posición a 60 días" valor={fmtARS(cards.pos60)} icono={ico('calendario')} tono="teal"
-              color={cards.pos60 >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(60))}`} />
-            <CardResumen label="Posición a 90 días" valor={fmtARS(cards.pos90)} icono={ico('calendario')} tono="teal"
-              color={cards.pos90 >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(90))}`} />
+            {[
+              { label: 'Saldo disponible hoy', dias: 0, real: cards.saldoHoy, icono: 'billetera', sub: 'Todas las cuentas al día de hoy' },
+              { label: 'Posición a 30 días', dias: 30, real: cards.pos30, icono: 'tendencia' },
+              { label: 'Posición a 60 días', dias: 60, real: cards.pos60, icono: 'calendario' },
+              { label: 'Posición a 90 días', dias: 90, real: cards.pos90, icono: 'calendario' },
+            ].map(c => {
+              const valor = vistaEsc ? vistaEsc.banco[c.dias] : c.real
+              const dif = vistaEsc ? vistaEsc.banco[c.dias] - resultados.actual.banco[c.dias] : 0
+              return (
+                <CardResumen key={c.label} label={c.label} valor={fmtARS(valor)} icono={ico(c.icono)} tono="teal"
+                  color={valor >= 0 ? 'text-slate-900' : 'text-red-600'}
+                  subLabel={subConDif(c.sub ?? `Al ${fmtFecha(fechaFutura(c.dias))}`, dif)} />
+              )
+            })}
           </div>
 
-          <CardsFima />
+          {base && resultados && <CardsFondos base={base} vista={vistaEsc ?? resultados.actual} real={resultados.actual} simulando={!!vistaEsc} />}
 
-          {puntosExtremos && (
+          {(vistaEsc ? extremosEsc : puntosExtremos) && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <CardResumen label="Punto más alto" valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
-                icono={ico('subir')} tono="emerald" color="text-emerald-600"
-                subLabel={`El ${fmtFecha(puntosExtremos.max.fecha_pago)} — ${puntosExtremos.max.proveedor_cliente ?? puntosExtremos.max.concepto ?? '—'}`} />
-              <CardResumen label="Punto más bajo" valor={fmtARS(puntosExtremos.min.saldoAcumulado)}
-                icono={ico('bajar')} tono="rose"
-                color={puntosExtremos.min.saldoAcumulado >= 0 ? 'text-emerald-600' : 'text-red-600'}
-                subLabel={`El ${fmtFecha(puntosExtremos.min.fecha_pago)} — ${puntosExtremos.min.proveedor_cliente ?? puntosExtremos.min.concepto ?? '—'}`} />
+              {vistaEsc ? (
+                <>
+                  <CardResumen label="Punto más alto" valor={fmtARS(extremosEsc.max.valor)}
+                    icono={ico('subir')} tono="emerald" color="text-emerald-600"
+                    subLabel={subConDif(`El ${fmtFecha(extremosEsc.max.fecha)} — en ${esc.activo.nombre}`, extremosEsc.max.valor - extremosReal.max.valor)} />
+                  <CardResumen label="Punto más bajo" valor={fmtARS(extremosEsc.min.valor)}
+                    icono={ico('bajar')} tono="rose"
+                    color={extremosEsc.min.valor >= 0 ? 'text-emerald-600' : 'text-red-600'}
+                    subLabel={subConDif(`El ${fmtFecha(extremosEsc.min.fecha)} — en ${esc.activo.nombre}`, extremosEsc.min.valor - extremosReal.min.valor)} />
+                </>
+              ) : (
+                <>
+                  <CardResumen label="Punto más alto" valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
+                    icono={ico('subir')} tono="emerald" color="text-emerald-600"
+                    subLabel={`El ${fmtFecha(puntosExtremos.max.fecha_pago)} — ${puntosExtremos.max.proveedor_cliente ?? puntosExtremos.max.concepto ?? '—'}`} />
+                  <CardResumen label="Punto más bajo" valor={fmtARS(puntosExtremos.min.saldoAcumulado)}
+                    icono={ico('bajar')} tono="rose"
+                    color={puntosExtremos.min.saldoAcumulado >= 0 ? 'text-emerald-600' : 'text-red-600'}
+                    subLabel={`El ${fmtFecha(puntosExtremos.min.fecha_pago)} — ${puntosExtremos.min.proveedor_cliente ?? puntosExtremos.min.concepto ?? '—'}`} />
+                </>
+              )}
             </div>
           )}
 
@@ -1280,103 +1377,58 @@ function TabCashFlow() {
 
 // ══════════════════════════════════════════════════════════════
 // Cards de fondos de inversión (FIMA) — solo lectura, una fila por fondo.
-// Se muestran debajo de las 4 cards de posición del Cash Flow.
+// Salen del mismo modelo que el gráfico (src/lib/fimaLedger.js + escenarios.js),
+// así que siguen al escenario activo; sin escenario, son el saldo real.
 // ══════════════════════════════════════════════════════════════
-function CardsFima() {
-  const [fondos,       setFondos]       = useState([])
-  const [saldos,       setSaldos]       = useState([])
-  const [movimientos,  setMovimientos]  = useState([])
-  const [rendimientos, setRendimientos] = useState([])
-  const [cargando,     setCargando]     = useState(true)
-  const [error,        setError]        = useState('')
-
-  useEffect(() => {
-    async function cargar() {
-      setCargando(true); setError('')
-      // select('*'): las tablas/columnas de fondos (fondos_inversion, fondo_id) son
-      // nuevas -- si todavía no existen en la base, no se corta la pantalla por eso.
-      const [{ data: dataFondos, error: e1 }, { data: dataSaldos, error: e2 }, { data: dataMovs, error: e3 }, { data: dataRend, error: e4 }] = await Promise.all([
-        supabase.from('fondos_inversion').select('*').order('created_at', { ascending: true }),
-        supabase.from('fima_saldo_inicial').select('*')
-          .order('fecha', { ascending: false }).order('created_at', { ascending: false }),
-        supabase.from('movimientos').select('*')
-          .eq('categoria', 'fima')
-          .order('fecha_pago', { ascending: true, nullsFirst: false })
-          .order('created_at', { ascending: true }),
-        supabase.from('fima_rendimientos').select('*')
-          .order('fecha', { ascending: true }).order('created_at', { ascending: true }),
-      ])
-      if (e3) { setError('No se pudo cargar el FIMA.'); setCargando(false); return }
-      setFondos(e1 ? [] : (dataFondos ?? []))
-      setSaldos(e2 ? [] : (dataSaldos ?? []))
-      setRendimientos(e4 ? [] : (dataRend ?? []))
-      setMovimientos((dataMovs ?? []).map(m => ({
-        ...m, montoEfectivo: m.estado === 'ejecutado' ? Number(m.monto_neto ?? m.monto_bruto ?? 0) : Number(m.monto_bruto ?? 0),
-      })))
-      setCargando(false)
-    }
-    cargar()
-  }, [])
-
-  // Un resumen por fondo, cada uno con su propio saldo inicial, rendimientos y
-  // movimientos. Mismo cálculo que el módulo de Finanzas (src/lib/fimaLedger.js).
-  const resumenes = useMemo(() => {
-    const lista = normalizarFondos(fondos)
-    return lista.map(fondo => {
-      const saldoIni = saldoInicialDe(saldos, fondo, lista)
-      const monto = Number(saldoIni?.monto ?? 0)
-      const ledger = construirLedgerFima({
-        movimientos: movimientos.filter(m => perteneceAlFondo(m, fondo, lista)),
-        rendimientos: rendimientos.filter(r => perteneceAlFondo(r, fondo, lista)),
-        saldoInicialMonto: monto,
-        saldoInicialFecha: saldoIni?.fecha ?? null,
-      })
-      return {
-        fondo,
-        sinSaldoInicial: !saldoIni,
-        saldoHoy: saldoFimaEn(ledger, monto, hoyISO()),
-        pos30: saldoFimaEn(ledger, monto, fechaFutura(30)),
-        pos60: saldoFimaEn(ledger, monto, fechaFutura(60)),
-        pos90: saldoFimaEn(ledger, monto, fechaFutura(90)),
-      }
-    })
-  }, [fondos, saldos, movimientos, rendimientos])
-
-  if (cargando) return null
-
+function CardsFondos({ base, vista, real, simulando }) {
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="bg-red-50 border border-red-100 text-red-700 text-sm rounded-xl px-4 py-3">{error}</div>
-      )}
-
-      {resumenes.map(({ fondo, sinSaldoInicial, saldoHoy, pos30, pos60, pos90 }, i) => {
+      {base.fondosLista.map((fondo, i) => {
+        const id = fondo.id ?? 'por-defecto'
         // Cada fondo con su propio color e ícono, para distinguirlos de un vistazo.
         const tono = ['indigo', 'violet', 'sky', 'amber'][i % 4]
         const icono = ico(i % 2 === 0 ? 'torta' : 'capas')
-        const colorDe = v => (v >= 0 ? 'text-slate-900' : 'text-red-600')
+        const sinSaldoInicial = base.sinSaldoInicial.includes(fondo.nombre)
         return (
-          <div key={fondo.id ?? 'por-defecto'}>
+          <div key={id}>
             {sinSaldoInicial && (
               <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3 mb-4">
                 Finanzas todavía no cargó el saldo inicial de {fondo.nombre} — los números de acá abajo todavía no son definitivos.
               </div>
             )}
-
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-              <CardResumen label={`Saldo ${fondo.nombre} hoy`} valor={fmtARS(saldoHoy)} icono={icono} tono={tono}
-                color={colorDe(saldoHoy)} subLabel="Plata invertida en el fondo (no es saldo bancario)" />
-              <CardResumen label={`Posición ${fondo.nombre} a 30 días`} valor={fmtARS(pos30)} icono={icono} tono={tono}
-                color={colorDe(pos30)} subLabel={`Al ${fmtFecha(fechaFutura(30))}`} />
-              <CardResumen label={`Posición ${fondo.nombre} a 60 días`} valor={fmtARS(pos60)} icono={icono} tono={tono}
-                color={colorDe(pos60)} subLabel={`Al ${fmtFecha(fechaFutura(60))}`} />
-              <CardResumen label={`Posición ${fondo.nombre} a 90 días`} valor={fmtARS(pos90)} icono={icono} tono={tono}
-                color={colorDe(pos90)} subLabel={`Al ${fmtFecha(fechaFutura(90))}`} />
+              {[
+                { dias: 0, label: `Saldo ${fondo.nombre} hoy`, sub: 'Plata invertida en el fondo (no es saldo bancario)' },
+                { dias: 30, label: `Posición ${fondo.nombre} a 30 días` },
+                { dias: 60, label: `Posición ${fondo.nombre} a 60 días` },
+                { dias: 90, label: `Posición ${fondo.nombre} a 90 días` },
+              ].map(c => {
+                const valor = vista.fondos[id][c.dias]
+                const dif = simulando ? valor - real.fondos[id][c.dias] : 0
+                return (
+                  <CardResumen key={c.label} label={c.label} valor={fmtARS(valor)} icono={icono} tono={tono}
+                    color={valor >= 0 ? 'text-slate-900' : 'text-red-600'}
+                    subLabel={subConDif(c.sub ?? `Al ${fmtFecha(fechaFutura(c.dias))}`, dif)} />
+                )
+              })}
             </div>
           </div>
         )
       })}
     </div>
+  )
+}
+
+// Subtítulo de una card; si hay diferencia contra lo real (escenario), la agrega en verde o rojo.
+function subConDif(texto, dif) {
+  if (!dif || Math.abs(dif) < 0.005) return texto
+  return (
+    <>
+      {texto}
+      <span className={`block font-semibold tabular-nums ${dif > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+        {dif > 0 ? '+' : '-'}{fmtARS(Math.abs(dif))} <span className="font-normal text-slate-400">vs real</span>
+      </span>
+    </>
   )
 }
 
@@ -1678,182 +1730,6 @@ function SeccionSinPresupuesto({ movimientos }) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// GRÁFICO: evolución del saldo proyectado (línea + área, con
-// relleno verde arriba de cero y rojo abajo de cero)
-// ══════════════════════════════════════════════════════════════
-const COLOR_POS = '#059669' // emerald-600 — saldo positivo
-const COLOR_NEG = '#dc2626' // red-600 — saldo negativo
-
-// Eje Y compacto: $ 1.500 M, $ -100 M, $ 250 mil
-function fmtEje(v) {
-  const abs = Math.abs(v)
-  const n = (x) => x.toLocaleString('es-AR', { maximumFractionDigits: 1 })
-  const texto = abs >= 1e6 ? `${n(abs / 1e6)} M` : abs >= 1e3 ? `${n(abs / 1e3)} mil` : n(abs)
-  return `${v < 0 ? '-' : ''}$ ${texto}`
-}
-
-// Marcas "redondas" para el eje Y (1, 2, 2.5, 5 × 10^n) que cubren de min a max.
-function ticksBonitos(min, max, cantidad = 5) {
-  const span = Math.max(max - min, 1)
-  const paso0 = span / (cantidad - 1)
-  const pot = Math.pow(10, Math.floor(Math.log10(paso0)))
-  const f = paso0 / pot
-  const paso = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * pot
-  const ini = Math.floor(min / paso) * paso
-  const fin = Math.ceil(max / paso) * paso
-  const ticks = []
-  for (let v = ini; v <= fin + paso / 2; v += paso) ticks.push(Math.abs(v) < paso / 1e6 ? 0 : v)
-  return ticks
-}
-
-function GraficoSaldo({ puntos }) {
-  const [hoverIdx, setHoverIdx] = useState(null)
-
-  if (!puntos || puntos.length < 2) {
-    return (
-      <div className="flex items-center justify-center h-48 text-slate-400 text-sm">
-        No hay datos suficientes para graficar.
-      </div>
-    )
-  }
-
-  // Coordenadas del SVG (se estira al ancho del contenedor). Las etiquetas, el
-  // punto y la burbuja son HTML encima, para que no se deformen al estirar.
-  const W = 760, H = 240
-  const padT = 10, padB = 10
-
-  const fechasMs = puntos.map(p => new Date(p.fecha + 'T00:00:00').getTime())
-  const t0 = fechasMs[0], t1 = fechasMs[fechasMs.length - 1]
-  const spanMs = Math.max(t1 - t0, 1)
-
-  const valores = puntos.map(p => p.saldo)
-  const ticks = ticksBonitos(Math.min(0, ...valores), Math.max(0, ...valores))
-  const dMin = ticks[0], dMax = ticks[ticks.length - 1]
-  const spanD = Math.max(dMax - dMin, 1)
-
-  const xOf = ms => ((ms - t0) / spanMs) * W
-  const yOf = v  => padT + (1 - (v - dMin) / spanD) * (H - padT - padB)
-
-  const coords = puntos.map((p, i) => ({ x: xOf(fechasMs[i]), y: yOf(p.saldo), ...p }))
-  const yZero = yOf(0)
-  const yTope = yOf(dMax)
-  const yFondo = yOf(dMin)
-
-  const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ')
-  const areaPath = `M ${coords[0].x.toFixed(1)} ${yZero.toFixed(1)} ` +
-    coords.map(c => `L ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ') +
-    ` L ${coords[coords.length - 1].x.toFixed(1)} ${yZero.toFixed(1)} Z`
-
-  // Etiquetas del eje X: fecha corta si el rango es corto, mes y año si es largo.
-  const dias = spanMs / 86400000
-  const etiquetasX = Array.from({ length: 6 }, (_, i) => {
-    const ms = t0 + (spanMs * i) / 5
-    const d = new Date(ms)
-    const texto = dias <= 100
-      ? d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' })
-      : d.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' }).replace('.', '')
-    return { pct: ((ms - t0) / spanMs) * 100, texto, i }
-  })
-
-  const ultimo = coords[coords.length - 1]
-  const punto = hoverIdx !== null ? coords[hoverIdx] : ultimo
-  const hovered = hoverIdx !== null
-  const colorPunto = punto.saldo >= 0 ? COLOR_POS : COLOR_NEG
-  const leftPct = (punto.x / W) * 100
-  const topPct = (punto.y / H) * 100
-
-  function handleMove(e) {
-    const rect = e.currentTarget.getBoundingClientRect()
-    const relX = ((e.clientX - rect.left) / rect.width) * W
-    let nearest = 0, mejorDist = Infinity
-    coords.forEach((c, i) => {
-      const dist = Math.abs(c.x - relX)
-      if (dist < mejorDist) { mejorDist = dist; nearest = i }
-    })
-    setHoverIdx(nearest)
-  }
-
-  // La burbuja va arriba del punto; si queda muy cerca de un borde, se corre para no cortarse.
-  const burbujaAbajo = topPct < 28
-  const alineacion = leftPct > 82 ? 'translateX(-100%)' : leftPct < 18 ? 'translateX(0)' : 'translateX(-50%)'
-
-  const uid = 'saldo'
-
-  return (
-    <div className="relative pl-16 pr-3 pt-2">
-      {/* Área del gráfico */}
-      <div className="relative h-60" onMouseMove={handleMove} onMouseLeave={() => setHoverIdx(null)}>
-
-        {/* Líneas de guía + eje Y */}
-        {ticks.map(t => (
-          <div key={t} className="absolute left-0 right-0 border-t border-dashed pointer-events-none"
-            style={{ top: `${(yOf(t) / H) * 100}%`, borderColor: t === 0 ? '#cbd5e1' : '#e8edf3' }}>
-            <span className="absolute -left-16 -translate-y-1/2 w-14 text-right text-[11px] text-slate-400 tabular-nums">
-              {fmtEje(t)}
-            </span>
-          </div>
-        ))}
-
-        <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
-          <defs>
-            <clipPath id={`${uid}-arriba`}><rect x="0" y="0" width={W} height={yZero} /></clipPath>
-            <clipPath id={`${uid}-abajo`}><rect x="0" y={yZero} width={W} height={H - yZero} /></clipPath>
-            <linearGradient id={`${uid}-gpos`} gradientUnits="userSpaceOnUse" x1="0" y1={yTope} x2="0" y2={yZero}>
-              <stop offset="0%" stopColor={COLOR_POS} stopOpacity="0.28" />
-              <stop offset="100%" stopColor={COLOR_POS} stopOpacity="0.02" />
-            </linearGradient>
-            <linearGradient id={`${uid}-gneg`} gradientUnits="userSpaceOnUse" x1="0" y1={yZero} x2="0" y2={yFondo}>
-              <stop offset="0%" stopColor={COLOR_NEG} stopOpacity="0.02" />
-              <stop offset="100%" stopColor={COLOR_NEG} stopOpacity="0.28" />
-            </linearGradient>
-          </defs>
-
-          {/* Área: degradé verde arriba de cero, rojo abajo */}
-          <path d={areaPath} fill={`url(#${uid}-gpos)`} clipPath={`url(#${uid}-arriba)`} />
-          <path d={areaPath} fill={`url(#${uid}-gneg)`} clipPath={`url(#${uid}-abajo)`} />
-
-          {/* Línea: verde arriba de cero, roja abajo */}
-          <path d={linePath} fill="none" stroke={COLOR_POS} strokeWidth="2.25" strokeLinejoin="round" strokeLinecap="round"
-            vectorEffect="non-scaling-stroke" clipPath={`url(#${uid}-arriba)`} />
-          <path d={linePath} fill="none" stroke={COLOR_NEG} strokeWidth="2.25" strokeLinejoin="round" strokeLinecap="round"
-            vectorEffect="non-scaling-stroke" clipPath={`url(#${uid}-abajo)`} />
-        </svg>
-
-        {/* Línea vertical al pasar el mouse */}
-        {hovered && (
-          <div className="absolute top-0 bottom-0 border-l border-dashed border-slate-300 pointer-events-none"
-            style={{ left: `${leftPct}%` }} />
-        )}
-
-        {/* Punto + burbuja (al final del gráfico, o donde esté el mouse) */}
-        <div className="absolute pointer-events-none z-10" style={{ left: `${leftPct}%`, top: `${topPct}%` }}>
-          <span className="absolute w-3.5 h-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-white shadow-md"
-            style={{ backgroundColor: colorPunto }} />
-          <div className="absolute bg-white rounded-xl border border-slate-100 px-3 py-2 whitespace-nowrap
-                          shadow-[0_6px_24px_rgba(15,23,42,0.12)]"
-            style={{ transform: alineacion, ...(burbujaAbajo ? { top: 14 } : { bottom: 14 }), left: 0 }}>
-            <div className="text-[11px] text-slate-400 font-medium">{fmtFecha(punto.fecha)}</div>
-            <div className={`text-sm font-bold tabular-nums ${punto.saldo >= 0 ? 'text-slate-900' : 'text-red-600'}`}>
-              {fmtARS(punto.saldo)}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Eje X — en pantallas angostas se muestran solo la mitad de las fechas para que no se pisen */}
-      <div className="relative h-6 mt-3">
-        {etiquetasX.map(({ pct, texto, i }) => (
-          <span key={i} className={`absolute text-[11px] text-slate-400 tabular-nums whitespace-nowrap ${i % 2 === 1 ? 'hidden sm:inline' : ''}`}
-            style={{ left: `${pct}%`, transform: i === 0 ? 'translateX(0)' : i === 5 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
-            {texto}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════════════
 // FilaProyeccionDirectorio: mismo control que en Finanzas —
 // Mantener proyección / No se cumple / Reprogramar
 // ══════════════════════════════════════════════════════════════
@@ -1942,62 +1818,6 @@ function FilaProyeccionDirectorio({ mov, nuevaFecha, guardando, error, onChangeF
 }
 
 // ── Helpers de UI compartidos por ambas pestañas ───────────────────────────────
-
-// Tarjeta base del panel: blanca, bordes redondeados y sombra suave.
-const CARD = 'bg-white border border-slate-100 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)]'
-
-// Colores de los íconos de las cards (fondo suave + ícono del mismo tono)
-const TONOS = {
-  teal:    'bg-teal-50 text-teal-600',
-  indigo:  'bg-indigo-50 text-indigo-600',
-  violet:  'bg-violet-50 text-violet-600',
-  sky:     'bg-sky-50 text-sky-600',
-  amber:   'bg-amber-50 text-amber-600',
-  emerald: 'bg-emerald-50 text-emerald-600',
-  rose:    'bg-rose-50 text-rose-600',
-}
-
-function Icono({ d, d2, className = 'w-5 h-5' }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.7} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d={d} />
-      {d2 && <path strokeLinecap="round" strokeLinejoin="round" d={d2} />}
-    </svg>
-  )
-}
-
-const ICONOS = {
-  billetera: { d: 'M21 12a2.25 2.25 0 00-2.25-2.25H15a3 3 0 11-6 0H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v3' },
-  tendencia: { d: 'M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941' },
-  calendario: { d: 'M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5' },
-  torta: { d: 'M10.5 6a7.5 7.5 0 107.5 7.5h-7.5V6z', d2: 'M13.5 10.5H21A7.5 7.5 0 0013.5 3v7.5z' },
-  capas: { d: 'M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0l4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0l-5.571 3-5.571-3' },
-  subir: { d: 'M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25' },
-  bajar: { d: 'M4.5 4.5l15 15m0 0V8.25m0 11.25H8.25' },
-  lista: { d: 'M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12' },
-  buscar: { d: 'M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z' },
-  info: { d: 'M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z' },
-}
-const ico = nombre => <Icono {...ICONOS[nombre]} />
-
-// Card de un indicador. Con `icono` lleva el mosaico de color a la izquierda.
-// `color` es la clase del número (por defecto, oscuro; rojo cuando es negativo).
-function CardResumen({ label, valor, color, subLabel, icono, tono = 'teal' }) {
-  return (
-    <div className={`${CARD} p-4 sm:p-5 flex items-center gap-3.5 min-w-0 transition-shadow hover:shadow-md`}>
-      {icono && (
-        <div className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${TONOS[tono] ?? TONOS.teal}`}>
-          {icono}
-        </div>
-      )}
-      <div className="min-w-0">
-        <p className="text-[13px] font-medium text-slate-500 leading-snug">{label}</p>
-        <p className={`text-xl font-bold tabular-nums tracking-tight whitespace-nowrap mt-0.5 ${color ?? 'text-slate-900'}`}>{valor}</p>
-        {subLabel && <p className="text-xs text-slate-400 mt-0.5 leading-snug">{subLabel}</p>}
-      </div>
-    </div>
-  )
-}
 
 function EstadoVacio({ titulo, descripcion }) {
   return (
