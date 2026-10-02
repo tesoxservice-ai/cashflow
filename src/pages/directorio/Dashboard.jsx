@@ -768,7 +768,7 @@ function TabCashFlow() {
   const [filtroCuenta,    setFiltroCuenta]    = useState('')
   const [filtroCategoria, setFiltroCategoria] = useState('')
   const [filtroBusqueda,  setFiltroBusqueda]  = useState('')
-  const [horizonte,       setHorizonte]       = useState(365)
+  const [horizonte,       setHorizonte]       = useState(90)
   const [mostrarDetalle,  setMostrarDetalle]  = useState(false)
 
   const [filaProyeccion,       setFilaProyeccion]       = useState(null)
