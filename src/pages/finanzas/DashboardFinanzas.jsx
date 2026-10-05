@@ -69,6 +69,13 @@ const IconPresupuesto = () => (
   </svg>
 )
 
+const IconHistorial = () => (
+  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round"
+      d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+)
+
 const IconBell = () => (
   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round"
@@ -343,6 +350,12 @@ export default function DashboardFinanzas() {
       descripcion: 'Saldo del fondo de inversión, separado del saldo bancario, con rendimientos y evolución proyectada.',
       icono: <IconFima />,
       ruta: '/finanzas/fima',
+    },
+    {
+      titulo: 'Historial',
+      descripcion: 'Quién hizo qué y cuándo: todo lo que se carga, modifica o elimina queda registrado, con el valor anterior y el nuevo.',
+      icono: <IconHistorial />,
+      ruta: '/finanzas/historial',
     },
   ]
 

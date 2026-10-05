@@ -14,6 +14,7 @@ import CashFlow                     from './pages/finanzas/CashFlow'
 import PresupuestoVsReal            from './pages/finanzas/PresupuestoVsReal'
 import VentasProyectadasFin         from './pages/finanzas/VentasProyectadas'
 import Fima                         from './pages/finanzas/Fima'
+import Historial                    from './pages/finanzas/Historial'
 import MargenPorObra                from './pages/MargenPorObra'
 import DashboardDirectorio          from './pages/directorio/Dashboard'
 import ProtectedRoute               from './components/ProtectedRoute'
@@ -62,6 +63,9 @@ export default function App() {
       } />
       <Route path="/finanzas/fima" element={
         <ProtectedRoute rolRequerido="finanzas"><Fima /></ProtectedRoute>
+      } />
+      <Route path="/finanzas/historial" element={
+        <ProtectedRoute rolRequerido="finanzas"><Historial /></ProtectedRoute>
       } />
       <Route path="/finanzas/margen" element={
         <ProtectedRoute rolRequerido="finanzas"><MargenPorObra /></ProtectedRoute>
