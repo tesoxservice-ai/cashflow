@@ -15,14 +15,20 @@
 // "Registrar" o a mano) se muestra como "Venta proyectada". Así nunca queda
 // duplicado un movimiento cargado a mano por fuera del botón Registrar.
 //
-// El gasto proyectado sigue proyectando recién desde el mes que viene (el mes
-// en curso se considera "ya sucediendo" y no genera proyección nueva). La
-// venta proyectada, en cambio, ya afecta el saldo desde el mes en curso.
+// El gasto proyectado proyecta desde el mes en curso en adelante (octubre se ve
+// igual que noviembre o diciembre), igual que la venta proyectada.
 //
 // La fecha de estas filas grises arranca en el último día del período, pero
 // Finanzas la puede pisar con una fecha estimada propia (ver
 // gasto_proyectado_fecha_estimada y venta_proyectada_fecha_estimada) sin
 // tocar el presupuesto/venta original de Operaciones.
+//
+// Pago a 30 días (solo gasto proyectado): Operaciones estima cuánto gasta en el
+// mes pero no cuándo, y casi todo se paga a 30 días y en miércoles. Para todos los
+// períodos desde PAGO_A_30_DIAS_DESDE, cada fila gris NO se divide: se reubica
+// entera en uno de los primeros 4 miércoles del mes siguiente. El reparto es
+// "al azar" pero estable (no cambia al recargar ni entre usuarios) y parejo en
+// cantidad de filas. Las facturas se siguen descontando igual que antes.
 
 export function ultimoDiaPeriodo(periodo) {
   const [anio, mes] = periodo.split('-').map(Number)
@@ -34,9 +40,56 @@ function inicioMesDe(fecha) {
   return `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-01`
 }
 
-function mesSiguienteA(fecha) {
-  const d = new Date(fecha.getFullYear(), fecha.getMonth() + 1, 1)
+function inicioMesAnteriorA(fecha) {
+  const d = new Date(fecha.getFullYear(), fecha.getMonth() - 1, 1)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+// ─── Pago a 30 días: fecha por defecto de los gastos proyectados ──────────────
+
+// El gasto proyectado de este período en adelante se paga a 30 días (en miércoles del mes
+// siguiente): octubre se paga en noviembre, noviembre en diciembre, y así.
+const PAGO_A_30_DIAS_DESDE = '2026-10-01'
+const CANTIDAD_MIERCOLES_DE_PAGO = 4
+const pagaA30Dias = periodo => periodo >= PAGO_A_30_DIAS_DESDE
+
+function isoLocalDe(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Los primeros `cantidad` miércoles del mes siguiente al período (ej. octubre -> 4, 11 y 18 de noviembre de 2026).
+function primerosMiercolesDelMesSiguiente(periodo, cantidad) {
+  const [anio, mes] = periodo.split('-').map(Number)
+  const d = new Date(anio, mes, 1) // "mes" va de 1 a 12, así que esto es el día 1 del mes siguiente
+  while (d.getDay() !== 3) d.setDate(d.getDate() + 1)
+  const fechas = []
+  while (fechas.length < cantidad) { fechas.push(isoLocalDe(d)); d.setDate(d.getDate() + 7) }
+  return fechas
+}
+
+// Primer miércoles estrictamente posterior a hoy (nunca se proyecta un pago en el pasado ni hoy).
+function proximoMiercolesDespuesDe(hoy) {
+  const d = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1)
+  while (d.getDay() !== 3) d.setDate(d.getDate() + 1)
+  return isoLocalDe(d)
+}
+
+// Hash estable (FNV-1a con mezcla final): el mismo texto da siempre el mismo número.
+function hashEstable(texto) {
+  let h = 2166136261
+  for (let i = 0; i < texto.length; i++) { h ^= texto.charCodeAt(i); h = Math.imul(h, 16777619) }
+  h ^= h >>> 15; h = Math.imul(h, 2246822507); h ^= h >>> 13; h = Math.imul(h, 3266489909); h ^= h >>> 16
+  return h >>> 0
+}
+
+// Reparte las líneas (obra|rubro|período) entre los miércoles: se ordenan "al azar" (por hash,
+// siempre igual) y se van asignando de a una, así cada miércoles recibe la misma cantidad de filas (±1).
+function repartirEnMiercoles(claves, periodo) {
+  const miercoles = primerosMiercolesDelMesSiguiente(periodo, CANTIDAD_MIERCOLES_DE_PAGO)
+  const ordenadas = [...claves].sort((a, b) => hashEstable(a) - hashEstable(b) || a.localeCompare(b))
+  const mapa = {}
+  ordenadas.forEach((k, i) => { mapa[k] = miercoles[i % miercoles.length] })
+  return mapa
 }
 
 // presupuestos: [{ obra_id, rubro_id, periodo, monto }]
@@ -46,13 +99,16 @@ function mesSiguienteA(fecha) {
 //   genera proyección nueva en el Cash Flow.
 // Devuelve: [{ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado, fechaPago }]
 export function calcularGastosProyectados(presupuestos, movimientos, fechasEstimadas = [], obras = [], hoy = new Date()) {
-  const desde = mesSiguienteA(hoy)
+  const desde = inicioMesDe(hoy)
+  // Un período con pago a 30 días se sigue proyectando durante el mes en que se paga (octubre se
+  // paga en noviembre): si no, el 1/11 desaparecería justo cuando hay que pagarlo.
+  const desdeA30Dias = inicioMesAnteriorA(hoy)
   const obrasActivas = new Set(obras.map(o => o.id))
 
   const presPorClave = {}
   presupuestos.forEach(p => {
     if (!p.obra_id || !p.rubro_id || !p.periodo) return
-    if (p.periodo < desde) return
+    if (p.periodo < desde && !(pagaA30Dias(p.periodo) && p.periodo >= desdeA30Dias)) return
     if (!obrasActivas.has(p.obra_id)) return
     const k = `${p.obra_id}|${p.rubro_id}|${p.periodo}`
     presPorClave[k] = (presPorClave[k] ?? 0) + Number(p.monto)
@@ -75,6 +131,17 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
     cerradoPorClave[k] = f.cerrado
   })
 
+  // Pago a 30 días: el miércoles de cada línea se define sobre TODAS las líneas presupuestadas del
+  // período (no solo las que siguen pendientes), así no cambia cuando entra una factura.
+  const clavesPorPeriodo = {}
+  Object.keys(presPorClave).forEach(k => { (clavesPorPeriodo[k.split('|')[2]] ??= []).push(k) })
+  const miercolesPorClave = {}
+  Object.entries(clavesPorPeriodo).forEach(([periodo, claves]) => {
+    if (pagaA30Dias(periodo)) Object.assign(miercolesPorClave, repartirEnMiercoles(claves, periodo))
+  })
+  const hoyISO = isoLocalDe(hoy)
+  const proximoMiercoles = proximoMiercolesDespuesDe(hoy)
+
   const resultado = []
   Object.entries(presPorClave).forEach(([k, presupuestado]) => {
     if (cerradoPorClave[k]) return // Finanzas revisó y cerró esta proyección a mano
@@ -82,7 +149,13 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
     const saldoProyectado = Math.max(0, presupuestado - gastoReal)
     if (saldoProyectado <= 0) return
     const [obra_id, rubro_id, periodo] = k.split('|')
-    const fechaPago = fechaEstimadaPorClave[k] ?? ultimoDiaPeriodo(periodo)
+    let fechaPago = fechaEstimadaPorClave[k] // si Finanzas puso una fecha, esa manda
+    if (!fechaPago) {
+      fechaPago = miercolesPorClave[k] ?? ultimoDiaPeriodo(periodo)
+      // Si el miércoles asignado ya pasó y todavía queda gasto sin facturar, se corre al próximo
+      // miércoles: una fila proyectada nunca queda en el pasado (no tiene que tocar el saldo de hoy).
+      if (miercolesPorClave[k] && fechaPago <= hoyISO) fechaPago = proximoMiercoles
+    }
     resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado, fechaPago })
   })
   return resultado

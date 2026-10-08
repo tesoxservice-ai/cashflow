@@ -92,6 +92,14 @@ const CATEGORIAS_FILTRO = [
   { value: 'otro',              label: 'Otro' },
 ]
 
+// "octubre" (o "enero 2027" si no es el año en curso): mes del período al que corresponde un gasto proyectado.
+function periodoCorto(periodoISO) {
+  if (!periodoISO) return ''
+  const d = new Date(periodoISO + 'T00:00:00')
+  const mes = d.toLocaleDateString('es-AR', { month: 'long' })
+  return d.getFullYear() === new Date().getFullYear() ? mes : `${mes} ${d.getFullYear()}`
+}
+
 function periodoDeStr(fechaStr) {
   if (!fechaStr) return null
   const d = new Date(fechaStr + 'T00:00:00')
@@ -1290,6 +1298,7 @@ function TabCashFlow() {
                           <span className="italic font-normal text-slate-500"
                             title={`Presupuestado: ${fmtARS(m._presupuestado)} — Ya facturado: ${fmtARS(m._gastoReal)}`}>
                             {m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar
+                            <span className="block not-italic text-slate-600 font-medium uppercase text-[10px]">Período {periodoCorto(m.periodo)}</span>
                           </span>
                         ) : m.categoria === 'venta_proyectada' ? (
                           <span className="italic font-normal text-slate-500">
