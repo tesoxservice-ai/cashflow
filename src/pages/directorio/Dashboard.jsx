@@ -821,8 +821,12 @@ function TabCashFlow() {
     const movIds = (movData ?? []).map(m => m.id)
     let notasPorMov = {}
     if (movIds.length > 0) {
-      const { data: notasData } = await supabase
-        .from('notas').select('movimiento_id, tipo_nota, monto').in('movimiento_id', movIds)
+      // Se traen todas las notas (son pocas): con un .in() de cientos de ids la URL se pasa del
+      // largo permitido, la consulta da error y las notas de débito/crédito quedaban sin aplicar
+      // en silencio, con el saldo mal.
+      const { data: notasData, error: notasErr } = await supabase
+        .from('notas').select('movimiento_id, tipo_nota, monto')
+      if (notasErr) setError('No se pudieron cargar las notas de débito/crédito: los saldos de las facturas pueden no ser exactos.')
       ;(notasData ?? []).forEach(n => {
         if (!notasPorMov[n.movimiento_id]) notasPorMov[n.movimiento_id] = []
         notasPorMov[n.movimiento_id].push(n)

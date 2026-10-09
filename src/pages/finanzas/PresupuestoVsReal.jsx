@@ -6,6 +6,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
+import { CARD, ico, CardResumen as CardPremium, CLS_LABEL, CLS_CAMPO, EstadoVacioPremium, CargandoPremium } from '../directorio/utilsDirectorio'
 
 const fmtARS = n => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 2 }).format(n ?? 0)
 const fmtPct = pct => `${pct.toFixed(1)}%`
@@ -231,23 +233,16 @@ export default function PresupuestoVsReal() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+    <div className={`min-h-screen flex flex-col ${CLASE_SIDEBAR}`} style={{ backgroundColor: '#f0f7fa' }}>
+      <SidebarFinanzas perfil={perfil} activo="presupuesto" />
+      <main className="flex-1 w-full max-w-[1600px] px-6 lg:px-8 py-8">
 
         <div className="mb-8">
-          <button onClick={() => navigate('/finanzas')}
-            className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
-            style={{ color: '#0e7490' }}
-            onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
-            onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}>
-            <IconBack />Panel de Finanzas
-          </button>
           <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Presupuesto vs. Real</h1>
           <p className="text-slate-400 text-sm mt-0.5">Comparativa entre lo presupuestado y lo ejecutado por obra y período</p>
         </div>
 
-        <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-6 shadow-sm">
+        <div className={`${CARD} p-4 sm:p-5 mb-5`}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className={lbCls}>Obra</label>
@@ -277,12 +272,7 @@ export default function PresupuestoVsReal() {
 
         {!obraId && <EstadoVacio titulo="Seleccioná una obra" descripcion="Elegí una obra y un período para ver el análisis presupuestario." />}
 
-        {obraId && cargando && (
-          <div className="flex items-center justify-center py-24 gap-3 text-slate-400">
-            <span className="w-5 h-5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
-            <span className="text-sm">Calculando análisis…</span>
-          </div>
-        )}
+        {obraId && cargando && <CargandoPremium texto="Calculando análisis…" />}
 
         {obraId && !cargando && !hayDatos && (
           <EstadoVacio titulo="Sin datos para esta combinación"
@@ -297,26 +287,28 @@ export default function PresupuestoVsReal() {
                 <span className="text-slate-300 mx-2">·</span>{periodoLabel}
               </p>
               {modoTodos && (
-                <span className="text-xs font-semibold px-2 py-0.5 rounded-full border"
-                  style={{ backgroundColor: '#e0f2fe', color: '#0e7490', borderColor: '#a5f3fc' }}>
+                <span className="text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-sky-50 text-cyan-800">
                   Hacé clic en un rubro para ver el desglose por mes
                 </span>
               )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-              <CardResumen label="Total presupuestado" valor={fmtARS(analisis.totalPres)} color="text-slate-900" />
-              <CardResumen label="Total gastado" valor={fmtARS(analisis.totalGast)} color="text-slate-900" />
-              <CardResumen label="Diferencia disponible" valor={fmtARS(analisis.totalDif)}
+              <CardPremium label="Total presupuestado" valor={fmtARS(analisis.totalPres)} icono={ico('billetera')} tono="teal" color="text-slate-900"
+                subLabel="Lo que cargó Operaciones" />
+              <CardPremium label="Total gastado" valor={fmtARS(analisis.totalGast)} icono={ico('bajar')} tono="rose" color="text-slate-900"
+                subLabel="Facturas reales cargadas" />
+              <CardPremium label="Diferencia disponible" valor={fmtARS(analisis.totalDif)}
+                icono={ico(analisis.totalDif >= 0 ? 'subir' : 'bajar')} tono={analisis.totalDif >= 0 ? 'emerald' : 'rose'}
                 color={analisis.totalDif >= 0 ? 'text-emerald-600' : 'text-red-600'}
-                subLabel={analisis.totalPres > 0 ? `${fmtPct(analisis.totalPct)} ejecutado` : undefined} />
+                subLabel={analisis.totalPres > 0 ? `${fmtPct(analisis.totalPct)} ejecutado` : 'Sin presupuesto cargado'} />
             </div>
 
-            <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm mb-6">
+            <div className={`${CARD} overflow-hidden mb-6`}>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 bg-slate-50/80">
+                    <tr className="border-b border-slate-100 bg-slate-50/70">
                       {modoTodos && <Th>{/* chevron */}</Th>}
                       <Th>Rubro</Th>
                       <Th align="right">Presupuestado</Th>
@@ -332,7 +324,7 @@ export default function PresupuestoVsReal() {
                     }
                   </tbody>
                   <tfoot>
-                    <tr style={{ backgroundColor: '#e0f2fe' }} className="border-t-2 border-cyan-100">
+                    <tr className="bg-sky-50/80 border-t border-sky-100">
                       {modoTodos && <td />}
                       <td className="px-5 py-3.5 text-sm font-bold" style={{ color: '#0e7490' }}>Total general</td>
                       <td className="px-5 py-3.5 text-right font-bold tabular-nums" style={{ color: '#0e7490' }}>{fmtARS(analisis.totalPres)}</td>
@@ -362,16 +354,16 @@ function GrupoRubroPeriodo({ grupo }) {
   const superado = grupo.subtotalPct > 100 && grupo.subtotalPres > 0
   return (
     <tr className={`border-b border-slate-100 transition-colors ${superado ? 'bg-red-50' : 'hover:bg-slate-50/60'}`}>
-      <td className="px-5 py-3 text-xs">
+      <td className="px-5 py-3.5 text-xs">
         <div className="flex items-center gap-2">
           <PuntoSemaforo pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} />
           <span className="font-semibold text-slate-800">{grupo.rubroNombre}</span>
         </div>
       </td>
-      <td className="px-5 py-3 text-right tabular-nums text-slate-600 text-xs">{grupo.subtotalPres > 0 ? fmtARS(grupo.subtotalPres) : <span className="text-slate-300">—</span>}</td>
-      <td className={`px-5 py-3 text-right tabular-nums text-xs font-medium ${superado ? 'text-red-700' : 'text-slate-600'}`}>{grupo.subtotalGast > 0 ? fmtARS(grupo.subtotalGast) : <span className="text-slate-300">—</span>}</td>
-      <td className={`px-5 py-3 text-right tabular-nums text-xs ${grupo.sinPresupuesto ? 'text-slate-400' : grupo.subtotalDif >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{grupo.sinPresupuesto ? '—' : fmtARS(grupo.subtotalDif)}</td>
-      <td className="px-5 py-3"><BarraProgreso pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} /></td>
+      <td className="px-5 py-3.5 text-right tabular-nums text-slate-600 text-xs">{grupo.subtotalPres > 0 ? fmtARS(grupo.subtotalPres) : <span className="text-slate-300">—</span>}</td>
+      <td className={`px-5 py-3.5 text-right tabular-nums text-xs font-medium ${superado ? 'text-red-700' : 'text-slate-600'}`}>{grupo.subtotalGast > 0 ? fmtARS(grupo.subtotalGast) : <span className="text-slate-300">—</span>}</td>
+      <td className={`px-5 py-3.5 text-right tabular-nums text-xs ${grupo.sinPresupuesto ? 'text-slate-400' : grupo.subtotalDif >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{grupo.sinPresupuesto ? '—' : fmtARS(grupo.subtotalDif)}</td>
+      <td className="px-5 py-3.5"><BarraProgreso pct={grupo.subtotalPct} sinPresupuesto={grupo.sinPresupuesto} /></td>
     </tr>
   )
 }
@@ -416,7 +408,7 @@ function GrupoRubroTodos({ grupo, expandido, onToggle }) {
 function SeccionSinPresupuesto({ movimientos }) {
   const total = movimientos.reduce((s, m) => s + Number(m.monto_bruto), 0)
   return (
-    <div className="bg-white border border-orange-200 rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white border border-orange-200 rounded-2xl overflow-hidden shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)]">
       <div className="px-5 py-4 border-b border-orange-100 bg-orange-50 flex items-center gap-3">
         <svg className="w-4 h-4 text-orange-500 shrink-0" viewBox="0 0 20 20" fill="currentColor">
           <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
@@ -428,51 +420,29 @@ function SeccionSinPresupuesto({ movimientos }) {
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead><tr className="border-b border-slate-100 bg-slate-50/80"><Th>Proveedor</Th><Th>Rubro</Th><Th>Concepto</Th><Th align="right">Monto</Th></tr></thead>
+          <thead><tr className="border-b border-slate-100 bg-slate-50/70"><Th>Proveedor</Th><Th>Rubro</Th><Th>Concepto</Th><Th align="right">Monto</Th></tr></thead>
           <tbody>
             {movimientos.map((m, i) => (
-              <tr key={m.id ?? i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
-                <td className="px-5 py-3 text-slate-700 text-xs">{m.proveedor_cliente ?? '—'}</td>
-                <td className="px-5 py-3 text-xs"><span className="bg-orange-50 text-orange-700 px-2 py-0.5 rounded-full text-xs font-semibold border border-orange-100">{m.rubroNombre}</span></td>
-                <td className="px-5 py-3 text-slate-500 text-xs">{m.concepto ?? '—'}</td>
-                <td className="px-5 py-3 text-right tabular-nums font-semibold text-red-600 text-xs">{fmtARS(m.monto_bruto)}</td>
+              <tr key={m.id ?? i} className="border-b border-slate-100/80 last:border-0 hover:bg-slate-50/70">
+                <td className="px-5 py-3.5 text-slate-700 text-xs">{m.proveedor_cliente ?? '—'}</td>
+                <td className="px-5 py-3.5 text-xs"><span className="bg-orange-50 text-orange-700 px-2.5 py-1 rounded-lg text-[11px] font-semibold">{m.rubroNombre}</span></td>
+                <td className="px-5 py-3.5 text-slate-500 text-xs">{m.concepto ?? '—'}</td>
+                <td className="px-5 py-3.5 text-right tabular-nums font-semibold text-red-600 text-xs">{fmtARS(m.monto_bruto)}</td>
               </tr>
             ))}
           </tbody>
-          <tfoot><tr className="border-t border-slate-100 bg-slate-50/80"><td colSpan={3} className="px-5 py-3 text-xs font-bold text-slate-700">Total sin presupuesto</td><td className="px-5 py-3 text-right tabular-nums font-bold text-red-700 text-xs">{fmtARS(total)}</td></tr></tfoot>
+          <tfoot><tr className="border-t border-slate-100 bg-slate-50/80"><td colSpan={3} className="px-5 py-3.5 text-xs font-bold text-slate-700">Total sin presupuesto</td><td className="px-5 py-3.5 text-right tabular-nums font-bold text-red-700 text-xs">{fmtARS(total)}</td></tr></tfoot>
         </table>
       </div>
     </div>
   )
 }
 
-function CardResumen({ label, valor, color, subLabel }) {
-  return (
-    <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
-      <p className="text-xs font-semibold text-slate-400 mb-1">{label}</p>
-      <p className={`text-xl font-extrabold tabular-nums ${color}`}>{valor}</p>
-      {subLabel && <p className="text-xs text-slate-400 mt-1">{subLabel}</p>}
-    </div>
-  )
-}
-
-function EstadoVacio({ titulo, descripcion }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 text-center bg-white rounded-2xl border border-slate-100 shadow-sm">
-      <div className="w-12 h-12 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: '#e0f2fe', color: '#0e7490' }}>
-        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v17.25m0 0c-1.472 0-2.882.265-4.185.75M12 20.25c1.472 0 2.882.265 4.185.75M18.75 4.97A48.416 48.416 0 0012 4.5c-2.291 0-4.545.16-6.75.47m13.5 0c1.01.143 2.01.317 3 .52m-3-.52l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.988 5.988 0 01-2.031.352 5.988 5.988 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L18.75 4.971zm-16.5.52c.99-.203 1.99-.377 3-.52m0 0l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.989 5.989 0 01-2.031.352 5.989 5.989 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L5.25 4.971z" />
-        </svg>
-      </div>
-      <p className="text-slate-700 font-bold text-sm">{titulo}</p>
-      <p className="text-slate-400 text-xs mt-1 max-w-sm">{descripcion}</p>
-    </div>
-  )
-}
+const EstadoVacio = EstadoVacioPremium
 
 function Th({ children, align = 'left' }) {
-  return <th className={`px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'}`}>{children}</th>
+  return <th className={`px-5 py-3.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'}`}>{children}</th>
 }
 
-const lbCls = 'block text-xs font-semibold text-slate-500 mb-1.5'
-const selCls = `w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white focus:outline-none focus:ring-2 focus:border-transparent`
+const lbCls = CLS_LABEL
+const selCls = CLS_CAMPO

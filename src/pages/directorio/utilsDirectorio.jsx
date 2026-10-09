@@ -149,3 +149,36 @@ export function CardResumen({ label, valor, color, subLabel, icono, tono = 'teal
   )
 }
 
+
+// ─── Estilo premium compartido por los módulos de Finanzas ────────────────────
+
+// Etiqueta de un campo (chiquita, en mayúscula) y el campo mismo (foco turquesa).
+export const CLS_LABEL = 'block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5'
+export const CLS_CAMPO = 'w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400'
+
+// Botón principal (turquesa con sombra) y botón secundario (blanco con borde).
+export const CLS_BOTON_PRIMARIO = 'inline-flex items-center justify-center gap-2 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors shadow-[0_6px_16px_rgba(14,116,144,0.28)] disabled:opacity-50 disabled:cursor-not-allowed'
+export const CLS_BOTON_SECUNDARIO = 'inline-flex items-center justify-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+
+// Pantalla vacía: ícono en un mosaico suave, título y una línea de ayuda.
+export function EstadoVacioPremium({ titulo, descripcion, icono = 'tendencia' }) {
+  return (
+    <div className={`${CARD} flex flex-col items-center justify-center py-16 px-6 text-center`}>
+      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 ${TONOS.teal}`}>
+        <Icono {...ICONOS[icono]} className="w-7 h-7" />
+      </div>
+      <p className="text-slate-800 font-bold text-sm">{titulo}</p>
+      {descripcion && <p className="text-slate-400 text-xs mt-1 max-w-sm">{descripcion}</p>}
+    </div>
+  )
+}
+
+// Cargando: un círculo girando con un texto.
+export function CargandoPremium({ texto = 'Cargando…' }) {
+  return (
+    <div className="flex items-center justify-center py-24 gap-3 text-slate-400">
+      <span className="w-5 h-5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
+      <span className="text-sm">{texto}</span>
+    </div>
+  )
+}

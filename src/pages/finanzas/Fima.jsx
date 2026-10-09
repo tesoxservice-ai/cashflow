@@ -18,6 +18,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
+import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium, CLS_LABEL, CLS_CAMPO, CargandoPremium } from '../directorio/utilsDirectorio'
 import { construirLedgerFima, saldoFimaEn, normalizarFondos, perteneceAlFondo, saldoInicialDe } from '../../lib/fimaLedger'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -304,44 +306,35 @@ export default function Fima() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
+    <div className={`min-h-screen flex flex-col ${CLASE_SIDEBAR}`} style={{ backgroundColor: '#f0f7fa' }}>
+      <SidebarFinanzas perfil={perfil} activo="fima" />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+      <main className="flex-1 w-full max-w-[1600px] px-6 lg:px-8 py-8">
 
         {/* Encabezado */}
         <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <button onClick={() => navigate('/finanzas')}
-              className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
-              style={{ color: '#0e7490' }}
-              onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
-              onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}>
-              <IconBack />
-              Panel de Finanzas
-            </button>
             <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">FIMA</h1>
             <p className="text-slate-400 text-sm mt-0.5">
               Saldo de cada fondo de inversión, separado del saldo bancario. Los movimientos se cargan desde Cash Flow → Nuevo movimiento.
             </p>
           </div>
           <button onClick={() => setModalRend(true)}
-            className="text-sm font-semibold px-4 py-2.5 rounded-xl border transition-colors"
+            className="text-sm font-semibold px-5 py-2.5 rounded-xl border transition-colors hover:bg-amber-100/70 shadow-[0_4px_12px_rgba(180,83,9,0.10)]"
             style={{ borderColor: '#fcd34d', color: '#b45309', backgroundColor: '#fffbeb' }}>
             Actualizar saldo
           </button>
         </div>
 
         {/* Fondos: uno por solapa. Con un solo fondo queda su nombre bien visible. */}
-        <div className="flex items-center gap-2 mb-6 flex-wrap">
+        <div className="inline-flex max-w-full flex-wrap rounded-xl border border-slate-200 bg-slate-50/70 p-0.5 mb-6">
           {fondosLista.map(f => {
             const activo = f.id === fondoActivo.id
             return (
               <button key={f.id ?? 'por-defecto'} onClick={() => setFondoSel(f.id)}
                 disabled={fondosLista.length === 1}
-                className={`px-4 py-2 rounded-xl text-sm font-bold border transition-colors disabled:cursor-default
-                  ${activo ? 'text-white border-transparent' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
-                style={activo ? { backgroundColor: '#7c3aed' } : {}}>
+                className={`px-4 py-2 rounded-[10px] text-sm font-semibold transition-colors disabled:cursor-default
+                  ${activo ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
                 {f.nombre}
               </button>
             )
@@ -349,14 +342,14 @@ export default function Fima() {
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-100 text-red-700 text-sm rounded-xl px-4 py-3 mb-6">
+          <div className="bg-red-50 border border-red-100 text-red-700 text-sm rounded-xl px-4 py-3.5 mb-6">
             {error}
           </div>
         )}
 
         {!fimaSaldoInicial && !cargando && (
           <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 text-amber-800
-                          text-sm rounded-xl px-4 py-3 mb-6">
+                          text-sm rounded-xl px-4 py-3.5 mb-6">
             <svg className="w-5 h-5 mt-0.5 shrink-0 text-amber-500" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
             </svg>
@@ -371,32 +364,33 @@ export default function Fima() {
         )}
 
         {cargando ? (
-          <div className="flex items-center justify-center py-24 gap-3 text-slate-400">
-            <span className="w-5 h-5 border-2 border-slate-200 border-t-violet-600 rounded-full animate-spin" />
-            <span className="text-sm">Calculando FIMA…</span>
-          </div>
+          <CargandoPremium texto="Calculando FIMA…" />
         ) : (
           <>
             {/* Card: saldo del fondo. El saldo bancario se mira en el Cash Flow
                 (acá no se duplica ese cálculo para que no haya dos
                 números distintos del mismo dato). */}
-            <div className="bg-white border border-violet-100 rounded-2xl p-5 shadow-sm mb-6 max-w-sm">
-              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: '#7c3aed' }}>Saldo {fondoActivo.nombre}</p>
-              <p className="text-slate-900 text-2xl font-extrabold tabular-nums mt-1.5">{fmtARS(saldoFimaHoy)}</p>
-              <p className="text-slate-400 text-xs mt-1">Plata invertida en el fondo hoy — no es dinero disponible en el banco</p>
+            <div className="max-w-md mb-4">
+              <CardPremium label={`Saldo ${fondoActivo.nombre}`} valor={fmtARS(saldoFimaHoy)} icono={ico('torta')} tono="violet"
+                color="text-slate-900" subLabel="Plata invertida en el fondo hoy — no es dinero disponible en el banco" />
             </div>
 
             {/* Cards: totales */}
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-              <CardMini label="Total invertido" sub="histórico" valor={fmtARS(totales.invertidoHist)} color="#7c3aed" />
-              <CardMini label="Total rescatado" sub="histórico" valor={fmtARS(totales.rescatadoHist)} color="#0e7490" />
-              <CardMini label="Rendimientos acumulados" sub="cargados hasta hoy" valor={fmtARS(totales.rendimientoAcum)} color={totales.rendimientoAcum >= 0 ? '#b45309' : '#dc2626'} />
-              <CardMini label="Inversiones proyectadas" sub={`${totales.inversionesProy.length} movimiento(s) a futuro`} valor={fmtARS(totales.sumaInversionesProy)} color="#7c3aed" />
-              <CardMini label="Rescates proyectados" sub={`${totales.rescatesProy.length} movimiento(s) a futuro`} valor={fmtARS(totales.sumaRescatesProy)} color="#0e7490" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
+              <CardPremium label="Total invertido" valor={fmtARS(totales.invertidoHist)} icono={ico('subir')} tono="violet"
+                color="text-slate-900" subLabel="Histórico" />
+              <CardPremium label="Total rescatado" valor={fmtARS(totales.rescatadoHist)} icono={ico('bajar')} tono="teal"
+                color="text-slate-900" subLabel="Histórico" />
+              <CardPremium label="Rendimientos acumulados" valor={fmtARS(totales.rendimientoAcum)} icono={ico('tendencia')} tono="amber"
+                color={totales.rendimientoAcum >= 0 ? 'text-amber-600' : 'text-red-600'} subLabel="Cargados hasta hoy" />
+              <CardPremium label="Inversiones proyectadas" valor={fmtARS(totales.sumaInversionesProy)} icono={ico('calendario')} tono="violet"
+                color="text-slate-900" subLabel={`${totales.inversionesProy.length} movimiento(s) a futuro`} />
+              <CardPremium label="Rescates proyectados" valor={fmtARS(totales.sumaRescatesProy)} icono={ico('calendario')} tono="teal"
+                color="text-slate-900" subLabel={`${totales.rescatesProy.length} movimiento(s) a futuro`} />
             </div>
 
             {/* Gráfico de evolución */}
-            <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-6 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)]">
               <div className="flex items-center justify-between mb-3">
                 <div>
                   <h2 className="text-slate-800 font-bold text-sm">Evolución del saldo — {fondoActivo.nombre}</h2>
@@ -407,14 +401,14 @@ export default function Fima() {
             </div>
 
             {/* Tabla evolución mensual */}
-            <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm mb-6">
+            <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)] mb-6">
               <div className="px-5 py-4 border-b border-slate-100">
                 <h2 className="text-slate-800 font-bold text-sm">Saldo proyectado mes a mes</h2>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="bg-slate-50/80">
+                    <tr className="bg-slate-50/70">
                       <Th>Período</Th>
                       <Th align="right">Inversiones del mes</Th>
                       <Th align="right">Rescates del mes</Th>
@@ -425,15 +419,15 @@ export default function Fima() {
                   </thead>
                   <tbody>
                     {evolucionMensual.map(e => (
-                      <tr key={e.periodo} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors">
-                        <td className="px-4 py-3 text-slate-700 font-semibold">{labelPeriodo(e.periodo)}</td>
-                        <td className="px-4 py-3 text-right tabular-nums text-violet-600">{e.invertido > 0 ? fmtARS(e.invertido) : '—'}</td>
-                        <td className="px-4 py-3 text-right tabular-nums text-cyan-700">{e.rescatado > 0 ? fmtARS(e.rescatado) : '—'}</td>
-                        <td className={`px-4 py-3 text-right tabular-nums ${e.rendimiento < 0 ? 'text-red-600' : 'text-amber-700'}`}>{e.rendimiento !== 0 ? fmtARS(e.rendimiento) : '—'}</td>
-                        <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-900">{fmtARS(e.saldoFin)}</td>
-                        <td className="px-4 py-3 text-center">
-                          <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full
-                            ${e.esFuturo ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'}`}>
+                      <tr key={e.periodo} className="border-t border-slate-100/80 hover:bg-slate-50/70 transition-colors">
+                        <td className="px-4 py-3.5 text-slate-700 font-semibold">{labelPeriodo(e.periodo)}</td>
+                        <td className="px-4 py-3.5 text-right tabular-nums text-violet-600">{e.invertido > 0 ? fmtARS(e.invertido) : '—'}</td>
+                        <td className="px-4 py-3.5 text-right tabular-nums text-cyan-700">{e.rescatado > 0 ? fmtARS(e.rescatado) : '—'}</td>
+                        <td className={`px-4 py-3.5 text-right tabular-nums ${e.rendimiento < 0 ? 'text-red-600' : 'text-amber-700'}`}>{e.rendimiento !== 0 ? fmtARS(e.rendimiento) : '—'}</td>
+                        <td className="px-4 py-3.5 text-right tabular-nums font-bold text-slate-900">{fmtARS(e.saldoFin)}</td>
+                        <td className="px-4 py-3.5 text-center">
+                          <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg
+                            ${e.esFuturo ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
                             {e.esFuturo ? 'Proyectado' : 'Real'}
                           </span>
                         </td>
@@ -445,7 +439,7 @@ export default function Fima() {
             </div>
 
             {/* Detalle de movimientos */}
-            <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+            <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)]">
               <div className="px-5 py-4 border-b border-slate-100">
                 <h2 className="text-slate-800 font-bold text-sm">Detalle de movimientos — {fondoActivo.nombre}</h2>
                 <p className="text-slate-400 text-xs mt-0.5">
@@ -463,7 +457,7 @@ export default function Fima() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="bg-slate-50/80">
+                      <tr className="bg-slate-50/70">
                         <Th>Fecha</Th>
                         <Th>Operación</Th>
                         <Th>Estado</Th>
@@ -474,23 +468,23 @@ export default function Fima() {
                     </thead>
                     <tbody>
                       {ledgerFima.map(m => (
-                        <tr key={m.id} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors">
-                          <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">{fmtFecha(m.fecha_pago)}</td>
-                          <td className="px-4 py-3">
-                            <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full
-                              ${m.subtipo === 'suscripcion' ? 'bg-violet-50 text-violet-700 border border-violet-100'
-                                : m.subtipo === 'rendimiento' ? 'bg-amber-50 text-amber-700 border border-amber-100'
-                                : 'bg-cyan-50 text-cyan-700 border border-cyan-100'}`}>
+                        <tr key={m.id} className="border-t border-slate-100/80 hover:bg-slate-50/70 transition-colors">
+                          <td className="px-4 py-3.5 text-slate-500 text-xs whitespace-nowrap">{fmtFecha(m.fecha_pago)}</td>
+                          <td className="px-4 py-3.5">
+                            <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg
+                              ${m.subtipo === 'suscripcion' ? 'bg-violet-50 text-violet-700'
+                                : m.subtipo === 'rendimiento' ? 'bg-amber-50 text-amber-700'
+                                : 'bg-cyan-50 text-cyan-700'}`}>
                               {m.subtipo === 'suscripcion' ? 'Suscripción (inversión)' : m.subtipo === 'rendimiento' ? 'Rendimiento' : 'Rescate'}
                             </span>
                           </td>
-                          <td className="px-4 py-3">
-                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full
-                              ${m.estado === 'ejecutado' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-slate-100 text-slate-500'}`}>
+                          <td className="px-4 py-3.5">
+                            <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg
+                              ${m.estado === 'ejecutado' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                               {m.estado === 'ejecutado' ? 'Ejecutado' : 'Proyectado'}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-slate-500 text-xs">
+                          <td className="px-4 py-3.5 text-slate-500 text-xs">
                             {m.subtipo === 'rendimiento'
                               ? (m.proveedor_cliente ?? 'Ajuste por rendimiento')
                               : (m.proveedor_cliente ?? m.concepto ?? '—')}
@@ -502,7 +496,7 @@ export default function Fima() {
                               </button>
                             )}
                           </td>
-                          <td className={`px-4 py-3 text-right tabular-nums font-semibold
+                          <td className={`px-4 py-3.5 text-right tabular-nums font-semibold
                             ${m.subtipo === 'suscripcion' ? 'text-violet-600'
                               : m.subtipo === 'rendimiento' ? (m.montoEfectivo < 0 ? 'text-red-600' : 'text-amber-700')
                               : 'text-cyan-700'}`}>
@@ -510,7 +504,7 @@ export default function Fima() {
                               ? (m.montoEfectivo < 0 ? '−' : '+')
                               : (m.subtipo === 'suscripcion' ? '+' : '−')}{fmtARS(Math.abs(m.montoEfectivo))}
                           </td>
-                          <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-900">{fmtARS(m.saldoFima)}</td>
+                          <td className="px-4 py-3.5 text-right tabular-nums font-bold text-slate-900">{fmtARS(m.saldoFima)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -538,19 +532,9 @@ export default function Fima() {
 
 // ─── Sub-componentes ──────────────────────────────────────────────────────────
 
-function CardMini({ label, sub, valor, color }) {
-  return (
-    <div className="bg-white border border-slate-100 rounded-2xl p-4 shadow-sm">
-      <p className="text-xs font-semibold text-slate-500">{label}</p>
-      <p className="text-lg font-extrabold tabular-nums mt-1" style={{ color }}>{valor}</p>
-      <p className="text-slate-300 text-[11px] mt-0.5">{sub}</p>
-    </div>
-  )
-}
-
 function Th({ children, align = 'left' }) {
   return (
-    <th className={`px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide
+    <th className={`px-4 py-3.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider
                     ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'}`}>
       {children}
     </th>
@@ -589,21 +573,27 @@ function ModalRendimiento({ fondo, hayIniciales, saldoEsperadoEn, userId, onCerr
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h3 className="text-slate-900 font-extrabold text-base">Actualizar saldo — {fondo.nombre}</h3>
-            <p className="text-slate-400 text-sm mt-0.5">
-              Ingresá el saldo real que muestra Galicia. La diferencia se registra como rendimiento y no mueve plata en el banco.
-            </p>
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center z-50 px-4">
+      <div className="bg-white rounded-2xl shadow-[0_24px_60px_rgba(15,23,42,0.25)] w-full max-w-sm p-6">
+        <div className="flex items-start justify-between gap-3 mb-5">
+          <div className="flex items-start gap-3">
+            <span className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${TONOS.amber}`}>
+              <Icono {...ICONOS.tendencia} />
+            </span>
+            <div>
+              <h3 className="text-slate-900 font-extrabold text-base leading-tight">Actualizar saldo</h3>
+              <p className="text-violet-700 text-xs font-semibold mt-0.5">{fondo.nombre}</p>
+            </div>
           </div>
-          <button onClick={onCerrar} className="text-slate-300 hover:text-slate-500 transition-colors mt-0.5">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+          <button onClick={onCerrar} className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
+        <p className="text-slate-400 text-sm -mt-2 mb-4">
+          Ingresá el saldo real que muestra Galicia. La diferencia se registra como rendimiento y no mueve plata en el banco.
+        </p>
 
         {!hayIniciales && (
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
@@ -641,13 +631,13 @@ function ModalRendimiento({ fondo, hayIniciales, saldoEsperadoEn, userId, onCerr
 
           <div className="flex gap-3 pt-1">
             <button type="submit" disabled={guardando}
-              className="flex-1 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-sm"
+              className="flex-1 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-[0_6px_16px_rgba(180,83,9,0.28)]"
               style={{ backgroundColor: '#b45309' }}>
               {guardando && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
               {guardando ? 'Guardando…' : 'Guardar'}
             </button>
             <button type="button" onClick={onCerrar} disabled={guardando}
-              className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 text-sm font-semibold py-2.5 rounded-xl transition-colors">
+              className="flex-1 border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-600 text-sm font-semibold py-2.5 rounded-xl transition-colors">
               Cancelar
             </button>
           </div>
@@ -657,10 +647,8 @@ function ModalRendimiento({ fondo, hayIniciales, saldoEsperadoEn, userId, onCerr
   )
 }
 
-const lbCls = 'block text-xs font-semibold text-slate-500 mb-1.5'
-const inCls = `w-full px-3 py-2 text-sm rounded-xl border border-slate-200
-  text-slate-900 placeholder:text-slate-300 bg-white
-  focus:outline-none focus:ring-2 focus:border-transparent`
+const lbCls = CLS_LABEL
+const inCls = CLS_CAMPO + ' placeholder:text-slate-300'
 
 // ─── Gráfico de evolución (línea, SVG inline — mismo patrón que Directorio) ────
 

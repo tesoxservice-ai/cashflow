@@ -10,7 +10,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
-import TopNav from '../../components/TopNav'
+import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
 import { describir, agrupar, MODULOS, ACCIONES } from '../../lib/historial'
 
 const POR_PAGINA = 50
@@ -168,21 +168,13 @@ export default function Historial() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
+    <div className={`min-h-screen flex flex-col ${CLASE_SIDEBAR}`} style={{ backgroundColor: '#f0f7fa' }}>
+      <SidebarFinanzas perfil={perfil} activo="historial" />
 
-      <main className="flex-1 max-w-5xl w-full mx-auto px-6 py-8">
+      <main className="flex-1 w-full max-w-6xl px-6 lg:px-8 py-8">
         {/* Encabezado */}
         <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <button onClick={() => navigate('/finanzas')}
-              className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
-              style={{ color: '#0e7490' }}
-              onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
-              onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}>
-              <IconBack />
-              Panel de Finanzas
-            </button>
             <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Historial</h1>
             <p className="text-slate-400 text-sm mt-0.5 max-w-2xl">
               Todo lo que se carga, modifica o elimina en el sistema queda registrado automáticamente: quién lo hizo, cuándo,
@@ -203,7 +195,7 @@ export default function Historial() {
         ) : (
           <>
             {/* Filtros */}
-            <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5 mb-6 shadow-sm space-y-4">
+            <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5 mb-6 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)] space-y-4">
               <div className="relative">
                 <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none"><IconBuscar /></span>
                 <input value={filtros.texto} onChange={e => set('texto', e.target.value)}
@@ -297,7 +289,7 @@ export default function Historial() {
                 <span className="text-sm">Cargando historial…</span>
               </div>
             ) : entradas.length === 0 ? (
-              <div className="bg-white border border-slate-100 rounded-2xl shadow-sm py-16 text-center">
+              <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)] py-16 text-center">
                 <p className="text-slate-700 font-bold text-sm">{hayFiltros ? 'No hay registros con esos filtros' : 'Todavía no hay registros'}</p>
                 <p className="text-slate-400 text-xs mt-1 max-w-sm mx-auto">
                   {hayFiltros ? 'Probá sacando algún filtro.' : 'Apenas alguien cargue, modifique o elimine algo, va a aparecer acá.'}
@@ -355,7 +347,7 @@ function Entrada({ grupo, onVerRegistro }) {
   const verbo = varios ? (primera.accion === 'crear' ? 'creó' : 'eliminó') : d.verbo
 
   return (
-    <article className="bg-white border border-slate-100 rounded-2xl shadow-sm p-4 sm:p-5">
+    <article className="bg-white border border-slate-100 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)] p-4 sm:p-5">
       <div className="flex items-start gap-3.5">
         <span className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${tono.icono}`}>
           <Ico d={ICONO_ACCION[primera.accion]} className="w-5 h-5" />

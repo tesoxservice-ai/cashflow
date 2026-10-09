@@ -15,6 +15,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../supabaseClient'
+import { CARD, TONOS, Icono, ICONOS, CLS_LABEL, CLS_CAMPO } from '../../directorio/utilsDirectorio'
 
 // ─────────────────────────────────────────────────────────────
 // Constantes de dominio
@@ -312,11 +313,19 @@ export default function FormularioMovimiento({
 
   // ── RENDER ──────────────────────────────────────────────────────
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-      <div className="flex items-center justify-between mb-5">
-        <h2 className="text-slate-800 font-semibold text-sm">Nuevo movimiento</h2>
+    <div className={`${CARD} p-5 sm:p-6 mb-6`}>
+      <div className="flex items-start justify-between gap-3 mb-6">
+        <div className="flex items-center gap-3.5">
+          <span className={`w-11 h-11 shrink-0 rounded-xl flex items-center justify-center ${TONOS.teal}`}>
+            <Icono {...ICONOS.lista} className="w-5 h-5" />
+          </span>
+          <div>
+            <h2 className="text-slate-900 font-bold text-base leading-tight">Nuevo movimiento</h2>
+            <p className="text-slate-400 text-xs mt-0.5">Elegí la categoría y completá los datos. Los campos con * son obligatorios.</p>
+          </div>
+        </div>
         <button onClick={onCancelar}
-          className="text-slate-400 hover:text-slate-600 transition-colors"
+          className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
           aria-label="Cerrar">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -505,7 +514,7 @@ export default function FormularioMovimiento({
         {/* ── Advertencia de presupuesto ────────────────────────── */}
         {advertencia && (
           <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-200
-                          text-amber-800 text-sm rounded-lg px-4 py-3">
+                          text-amber-800 text-sm rounded-xl px-4 py-3">
             <svg className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
             </svg>
@@ -532,11 +541,11 @@ export default function FormularioMovimiento({
 
         {/* ── Botones ────────────────────────────────────────────── */}
         {cat && (
-          <div className="flex items-center gap-3 pt-1">
+          <div className="flex items-center gap-3 pt-2">
             <button type="submit" disabled={guardando}
-              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700
-                         disabled:opacity-50 text-white text-sm font-medium
-                         px-5 py-2.5 rounded-lg transition-colors">
+              className="inline-flex items-center gap-2 text-white text-sm font-semibold px-6 py-2.5 rounded-xl
+                         transition-colors disabled:opacity-50 shadow-[0_6px_16px_rgba(14,116,144,0.28)] hover:brightness-90"
+              style={{ backgroundColor: '#0e7490' }}>
               {guardando && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
               {guardando ? 'Guardando…' : 'Guardar movimiento'}
             </button>
@@ -558,19 +567,15 @@ const fmtARS = n => new Intl.NumberFormat('es-AR', {
   style: 'currency', currency: 'ARS', minimumFractionDigits: 2,
 }).format(n ?? 0)
 
-const inputCls  = `w-full px-3 py-2 text-sm rounded-lg border border-slate-200
-  text-slate-900 placeholder:text-slate-400
-  focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent`
+const inputCls  = CLS_CAMPO + ' placeholder:text-slate-300'
 
-const selectCls = `w-full px-3 py-2 text-sm rounded-lg border border-slate-200
-  text-slate-900 bg-white
-  focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent`
+const selectCls = CLS_CAMPO
 
 // Wrapper de campo con label
 function Campo({ label, children }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-slate-600 mb-1.5">{label}</label>
+      <label className={CLS_LABEL}>{label}</label>
       {children}
     </div>
   )

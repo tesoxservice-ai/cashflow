@@ -8,6 +8,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
+import { CARD, ico, CardResumen as CardPremium, CLS_LABEL, CLS_CAMPO, EstadoVacioPremium, CargandoPremium } from '../directorio/utilsDirectorio'
 import { calcularCoberturaVentas } from '../../lib/proyeccionPresupuesto'
 
 const RUBROS = [
@@ -203,21 +205,13 @@ export default function VentasProyectadasFinanzas() {
   const totalFiltrado  = ventasFiltradas.reduce((s, v) => s + Number(v.monto), 0)
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
+    <div className={`min-h-screen flex flex-col ${CLASE_SIDEBAR}`} style={{ backgroundColor: '#f0f7fa' }}>
+      <SidebarFinanzas perfil={perfil} activo="ventas" />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+      <main className="flex-1 w-full max-w-[1600px] px-6 lg:px-8 py-8">
 
         {/* Encabezado */}
         <div className="mb-8">
-          <button onClick={() => navigate('/finanzas')}
-            className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
-            style={{ color: '#0e7490' }}
-            onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
-            onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}>
-            <IconBack />
-            Panel de Finanzas
-          </button>
           <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Ventas Proyectadas</h1>
           <p className="text-slate-400 text-sm mt-0.5">
             Ingresos esperados cargados por Operaciones, de solo lectura. El cobro real se carga con "Nuevo movimiento" en el Cash Flow,
@@ -226,7 +220,7 @@ export default function VentasProyectadasFinanzas() {
         </div>
 
         {/* Filtros */}
-        <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-6 shadow-sm">
+        <div className={`${CARD} p-4 sm:p-5 mb-5`}>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className={lbCls}>Obra</label>
@@ -254,9 +248,12 @@ export default function VentasProyectadasFinanzas() {
 
         {/* Cards resumen */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-          <CardResumen label="Total proyectado" valor={fmtARS(totalGeneral)} color="text-slate-900" />
-          <CardResumen label="Pendiente de facturar" valor={fmtARS(totalPendiente)} color="text-amber-600" />
-          <CardResumen label="Ya cubierto por ingresos reales" valor={fmtARS(totalCubierto)} color="text-emerald-600" />
+          <CardPremium label="Total proyectado" valor={fmtARS(totalGeneral)} icono={ico('billetera')} tono="teal" color="text-slate-900"
+            subLabel="Lo que Operaciones espera vender" />
+          <CardPremium label="Pendiente de facturar" valor={fmtARS(totalPendiente)} icono={ico('calendario')} tono="amber" color="text-amber-600"
+            subLabel="Todavía sin ingreso real" />
+          <CardPremium label="Ya cubierto por ingresos reales" valor={fmtARS(totalCubierto)} icono={ico('tendencia')} tono="emerald" color="text-emerald-600"
+            subLabel="Cobrado o facturado" />
         </div>
 
         {/* Error */}
@@ -274,32 +271,16 @@ export default function VentasProyectadasFinanzas() {
 
         {/* Contenido */}
         {cargando ? (
-          <div className="flex items-center justify-center py-24 gap-3 text-slate-400">
-            <span className="w-5 h-5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
-            <span className="text-sm">Cargando ventas…</span>
-          </div>
+          <CargandoPremium texto="Cargando ventas…" />
         ) : ventasFiltradas.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center
-                          bg-white rounded-2xl border border-slate-100 shadow-sm">
-            <div className="w-14 h-14 rounded-full flex items-center justify-center mb-4"
-              style={{ backgroundColor: '#e0f2fe', color: '#0e7490' }}>
-              <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0
-                     0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
-              </svg>
-            </div>
-            <p className="text-slate-700 font-bold text-sm">Sin ventas para estos filtros</p>
-            <p className="text-slate-400 text-xs mt-1 max-w-xs">
-              Operaciones todavía no cargó ventas proyectadas, o no coinciden con los filtros seleccionados.
-            </p>
-          </div>
+          <EstadoVacioPremium titulo="Sin ventas para estos filtros"
+            descripcion="Operaciones todavía no cargó ventas proyectadas, o no coinciden con los filtros seleccionados." />
         ) : (
-          <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+          <div className={`${CARD} overflow-hidden`}>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50/80">
+                  <tr className="border-b border-slate-100 bg-slate-50/70">
                     <Th>Obra</Th>
                     <Th>Período</Th>
                     <Th>Rubro</Th>
@@ -309,7 +290,7 @@ export default function VentasProyectadasFinanzas() {
                 </thead>
                 <tbody>
                   {ventasFiltradas.map(v => (
-                    <tr key={v.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 transition-colors">
+                    <tr key={v.id} className="border-b border-slate-100/80 last:border-0 hover:bg-slate-50/70 transition-colors">
                       <td className="px-5 py-3.5 text-xs text-slate-700">
                         <span className="font-semibold text-slate-800">{v.obras?.codigo}</span>
                         <span className="text-slate-300 mx-1.5">·</span>
@@ -322,13 +303,11 @@ export default function VentasProyectadasFinanzas() {
                       </td>
                       <td className="px-5 py-3.5 text-center">
                         {v.cubierto ? (
-                          <span className="text-xs font-semibold bg-emerald-50 text-emerald-700
-                                           border border-emerald-100 px-2.5 py-0.5 rounded-full">
+                          <span className="text-[11px] font-semibold bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-lg">
                             Cubierto
                           </span>
                         ) : (
-                          <span className="text-xs font-semibold bg-amber-50 text-amber-700
-                                           border border-amber-100 px-2.5 py-0.5 rounded-full"
+                          <span className="text-[11px] font-semibold bg-amber-50 text-amber-700 px-2.5 py-1 rounded-lg"
                             title={`Falta facturar ${fmtARS(v.pendienteGrupo)} de esta obra y período`}>
                             Pendiente
                           </span>
@@ -338,7 +317,7 @@ export default function VentasProyectadasFinanzas() {
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr style={{ backgroundColor: '#e0f2fe' }} className="border-t-2 border-cyan-100">
+                  <tr className="bg-sky-50/80 border-t border-sky-100">
                     <td colSpan={3} className="px-5 py-3 text-sm font-bold" style={{ color: '#0e7490' }}>
                       Total
                     </td>
@@ -359,24 +338,14 @@ export default function VentasProyectadasFinanzas() {
 
 // ─── Sub-componentes ──────────────────────────────────────────────────────────
 
-function CardResumen({ label, valor, color }) {
-  return (
-    <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
-      <p className="text-xs font-semibold text-slate-400 mb-1">{label}</p>
-      <p className={`text-xl font-extrabold tabular-nums ${color}`}>{valor}</p>
-    </div>
-  )
-}
-
 function Th({ children, align = 'left' }) {
   return (
-    <th className={`px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide
+    <th className={`px-5 py-3.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider
                     ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'}`}>
       {children}
     </th>
   )
 }
 
-const lbCls = 'block text-xs font-semibold text-slate-500 mb-1.5'
-const selCls = `w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200
-  text-slate-900 bg-white focus:outline-none focus:ring-2 focus:border-transparent`
+const lbCls = CLS_LABEL
+const selCls = CLS_CAMPO

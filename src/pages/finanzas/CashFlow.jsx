@@ -6,11 +6,12 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
-import SaldosIniciales from './components/SaldosIniciales'
+import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
 import FormularioMovimiento from './components/FormularioMovimiento'
 import SeccionDebitos from './components/SeccionDebitos'
 import ModalNotas from './components/ModalNotas'
 import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
+import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium } from '../directorio/utilsDirectorio'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -403,10 +404,13 @@ export default function CashFlow() {
     const movIds = (movData ?? []).map(m => m.id)
     let notasPorMov = {}
     if (movIds.length > 0) {
-      const { data: notasData } = await supabase
+      // Se traen todas las notas (son pocas): con un .in() de cientos de ids la URL se pasa del
+      // largo permitido, la consulta da error y las notas de débito/crédito quedaban sin aplicar
+      // en silencio, con el saldo mal.
+      const { data: notasData, error: notasErr } = await supabase
         .from('notas')
         .select('movimiento_id, tipo_nota, monto')
-        .in('movimiento_id', movIds)
+      if (notasErr) setError('No se pudieron cargar las notas de débito/crédito: los saldos de las facturas pueden no ser exactos.')
       ;(notasData ?? []).forEach(n => {
         if (!notasPorMov[n.movimiento_id]) notasPorMov[n.movimiento_id] = []
         notasPorMov[n.movimiento_id].push(n)
@@ -786,28 +790,19 @@ export default function CashFlow() {
     else await cargarFechasEstimadasGasto()
   }
 
-  const selCls = `w-full px-3 py-2 text-sm rounded-xl border border-slate-200
-    text-slate-900 bg-white focus:outline-none focus:ring-2 focus:border-transparent`
+  const selCls = `w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
+    transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400`
+  const lbCls = 'block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5'
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
+    <div className={`min-h-screen flex flex-col ${CLASE_SIDEBAR}`} style={{ backgroundColor: '#f0f7fa' }}>
+      <SidebarFinanzas perfil={perfil} activo="cashflow" />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+      <main className="flex-1 w-full max-w-[1600px] px-6 lg:px-8 py-8">
 
         {/* Encabezado */}
         <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <button
-              onClick={() => navigate('/finanzas')}
-              className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
-              style={{ color: '#0e7490' }}
-              onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
-              onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}
-            >
-              <IconBack />
-              Panel de Finanzas
-            </button>
             <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Cash Flow</h1>
             <p className="text-slate-400 text-sm mt-0.5">
               Posición financiera de la empresa — próximos {horizonte} días
@@ -817,7 +812,7 @@ export default function CashFlow() {
           <button
             onClick={() => setMostrarFormMov(true)}
             className="shrink-0 inline-flex items-center gap-2 text-white text-sm font-semibold
-                       px-4 py-2.5 rounded-xl transition-colors shadow-sm"
+                       px-5 py-2.5 rounded-xl transition-colors shadow-[0_6px_16px_rgba(14,116,144,0.28)]"
             style={{ backgroundColor: '#0e7490' }}
             onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
             onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}
@@ -831,7 +826,7 @@ export default function CashFlow() {
 
         {/* Nuevo movimiento — en un modal para no mover el scroll de la tabla */}
         {mostrarFormMov && (
-          <div className="fixed inset-0 bg-black/40 z-50 overflow-y-auto p-4 sm:p-8">
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] z-50 overflow-y-auto p-4 sm:p-8">
             <div className="w-full max-w-5xl mx-auto">
               <FormularioMovimiento
                 obras={obras} rubros={rubros} cuentas={cuentas} debitos={debitos} fondos={fondos}
@@ -846,7 +841,7 @@ export default function CashFlow() {
         {/* Indicador de refresco en segundo plano (no tapa la pantalla ni mueve el scroll) */}
         {actualizando && (
           <div className="fixed top-4 right-4 z-50 flex items-center gap-2 bg-white shadow-md
-                          border border-slate-100 rounded-full px-3 py-1.5 text-xs text-slate-500">
+                          border border-slate-100 rounded-xl px-3.5 py-2 text-xs font-medium text-slate-500">
             <span className="w-3.5 h-3.5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
             Actualizando…
           </div>
@@ -865,60 +860,35 @@ export default function CashFlow() {
           </div>
         )}
 
-        <SaldosIniciales cuentas={cuentas} userId={user.id} onActualizado={cargarSaldosBase} />
-
-        {/* Cards resumen */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <CardResumen
-            label="Saldo disponible hoy"
-            valor={fmtARS(cards.saldoHoy)}
-            subLabel="Todas las cuentas al día de hoy"
-            positivo={cards.saldoHoy >= 0}
-            grande
-          />
-          <CardResumen
-            label="Posición a 30 días"
-            valor={fmtARS(cards.pos30)}
-            subLabel={`Al ${fmtFecha(fechaFutura(30))}`}
-            positivo={cards.pos30 >= 0}
-          />
-          <CardResumen
-            label="Posición a 60 días"
-            valor={fmtARS(cards.pos60)}
-            subLabel={`Al ${fmtFecha(fechaFutura(60))}`}
-            positivo={cards.pos60 >= 0}
-          />
-          <CardResumen
-            label="Posición a 90 días"
-            valor={fmtARS(cards.pos90)}
-            subLabel={`Al ${fmtFecha(fechaFutura(90))}`}
-            positivo={cards.pos90 >= 0}
-          />
+        {/* Cards de posición */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
+          <CardPremium label="Saldo disponible hoy" valor={fmtARS(cards.saldoHoy)} icono={ico('billetera')} tono="teal"
+            color={cards.saldoHoy >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel="Todas las cuentas al día de hoy" />
+          <CardPremium label="Posición a 30 días" valor={fmtARS(cards.pos30)} icono={ico('tendencia')} tono="teal"
+            color={cards.pos30 >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(30))}`} />
+          <CardPremium label="Posición a 60 días" valor={fmtARS(cards.pos60)} icono={ico('calendario')} tono="teal"
+            color={cards.pos60 >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(60))}`} />
+          <CardPremium label="Posición a 90 días" valor={fmtARS(cards.pos90)} icono={ico('calendario')} tono="teal"
+            color={cards.pos90 >= 0 ? 'text-slate-900' : 'text-red-600'} subLabel={`Al ${fmtFecha(fechaFutura(90))}`} />
         </div>
 
-        {/* Cards de picos (maximo/minimo dentro de lo filtrado) */}
+        {/* Picos (máximo y mínimo dentro de lo filtrado) */}
         {puntosExtremos && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-            <CardResumen
-              label="Punto más alto"
-              valor={fmtARS(puntosExtremos.max.saldoAcumulado)}
-              subLabel={`El ${fmtFecha(puntosExtremos.max.fecha_pago)} — ${puntosExtremos.max.proveedor_cliente ?? puntosExtremos.max.concepto ?? ''}`}
-              positivo={true}
-            />
-            <CardResumen
-              label="Punto más bajo"
-              valor={fmtARS(puntosExtremos.min.saldoAcumulado)}
-              subLabel={`El ${fmtFecha(puntosExtremos.min.fecha_pago)} — ${puntosExtremos.min.proveedor_cliente ?? puntosExtremos.min.concepto ?? ''}`}
-              positivo={puntosExtremos.min.saldoAcumulado >= 0}
-            />
+            <CardPremium label="Punto más alto" valor={fmtARS(puntosExtremos.max.saldoAcumulado)} icono={ico('subir')} tono="emerald"
+              color="text-emerald-600"
+              subLabel={`El ${fmtFecha(puntosExtremos.max.fecha_pago)} — ${puntosExtremos.max.proveedor_cliente ?? puntosExtremos.max.concepto ?? ''}`} />
+            <CardPremium label="Punto más bajo" valor={fmtARS(puntosExtremos.min.saldoAcumulado)} icono={ico('bajar')} tono="rose"
+              color={puntosExtremos.min.saldoAcumulado >= 0 ? 'text-emerald-600' : 'text-red-600'}
+              subLabel={`El ${fmtFecha(puntosExtremos.min.fecha_pago)} — ${puntosExtremos.min.proveedor_cliente ?? puntosExtremos.min.concepto ?? ''}`} />
           </div>
         )}
 
         {/* Filtros */}
-        <div className="bg-white border border-slate-100 rounded-2xl p-4 mb-4 shadow-sm">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className={`${CARD} p-4 sm:p-5 mb-5`}>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Horizonte</label>
+              <label className={lbCls}>Horizonte</label>
               <select value={horizonte} onChange={e => setHorizonte(Number(e.target.value))} className={selCls}>
                 <option value={30}>Próximos 30 días</option>
                 <option value={60}>Próximos 60 días</option>
@@ -928,14 +898,14 @@ export default function CashFlow() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Cuenta</label>
+              <label className={lbCls}>Cuenta</label>
               <select value={filtroCuenta} onChange={e => setFiltroCuenta(e.target.value)} className={selCls}>
                 <option value="">Todas las cuentas</option>
                 {cuentas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Estado</label>
+              <label className={lbCls}>Estado</label>
               <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} className={selCls}>
                 <option value="">Todos</option>
                 <option value="proyectado">Solo proyectados</option>
@@ -943,7 +913,7 @@ export default function CashFlow() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Categoría</label>
+              <label className={lbCls}>Categoría</label>
               <select value={filtroCategoria} onChange={e => setFiltroCategoria(e.target.value)} className={selCls}>
                 <option value="">Todas</option>
                 {Object.entries(LABEL_CAT).map(([val, label]) => (
@@ -951,46 +921,30 @@ export default function CashFlow() {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Fecha desde</label>
+            <div className="sm:col-span-2">
+              <label className={lbCls}>Fecha desde</label>
               <div className="flex gap-2">
-                <input
-                  type="date"
-                  value={filtroFechaDesde}
-                  onChange={e => setFiltroFechaDesde(e.target.value)}
-                  className={selCls}
-                />
-                <button
-                  type="button"
-                  onClick={() => setFiltroFechaDesde(hoyISO())}
-                  className="shrink-0 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200
-                             text-slate-600 hover:bg-slate-50 transition-colors whitespace-nowrap"
-                >
+                <input type="date" value={filtroFechaDesde} onChange={e => setFiltroFechaDesde(e.target.value)} className={selCls} />
+                <button type="button" onClick={() => setFiltroFechaDesde(hoyISO())}
+                  className="shrink-0 px-4 py-2.5 text-sm font-semibold rounded-xl border border-slate-200 bg-white
+                             text-slate-600 hover:bg-slate-50 transition-colors whitespace-nowrap">
                   Desde hoy
                 </button>
-                {filtroFechaDesde && (
-                  <button
-                    type="button"
-                    onClick={() => setFiltroFechaDesde('')}
-                    className="shrink-0 px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200
-                               text-slate-400 hover:bg-slate-50 transition-colors"
-                  >
-                    Sacar
-                  </button>
-                )}
+                <button type="button" onClick={() => setFiltroFechaDesde('')} disabled={!filtroFechaDesde}
+                  className="shrink-0 px-4 py-2.5 text-sm font-semibold rounded-xl border border-slate-200 bg-white
+                             text-slate-500 hover:bg-slate-50 transition-colors disabled:opacity-40 disabled:cursor-default disabled:hover:bg-white">
+                  Limpiar
+                </button>
               </div>
             </div>
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-                Buscar (proveedor, factura, concepto, obra)
-              </label>
-              <input
-                type="text"
-                value={filtroBusqueda}
-                onChange={e => setFiltroBusqueda(e.target.value)}
-                placeholder="Ej: startech, 4-1596, obra 678…"
-                className={selCls}
-              />
+            <div className="sm:col-span-3">
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none">
+                  <Icono {...ICONOS.buscar} className="w-4 h-4" />
+                </span>
+                <input type="text" value={filtroBusqueda} onChange={e => setFiltroBusqueda(e.target.value)}
+                  placeholder="Buscar proveedor, factura, concepto u obra…" className={`${selCls} !pl-10`} />
+              </div>
             </div>
           </div>
         </div>
@@ -1003,7 +957,7 @@ export default function CashFlow() {
           </div>
         ) : filasFiltradas.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center
-                          bg-white rounded-2xl border border-slate-100 shadow-sm">
+                          bg-white rounded-2xl border border-slate-100 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_20px_rgba(15,23,42,0.05)]">
             <div className="w-14 h-14 rounded-full flex items-center justify-center mb-4"
               style={{ backgroundColor: '#e0f2fe', color: '#0e7490' }}>
               <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -1062,19 +1016,18 @@ export default function CashFlow() {
             />
 
             {/* Pie de totales */}
-            <div className="mt-3 bg-white border border-slate-100 rounded-2xl p-4
-                            flex items-center justify-end gap-8 text-sm shadow-sm">
-              <div className="text-right">
-                <p className="text-xs text-slate-400 mb-0.5">Total ingresos</p>
-                <p className="font-semibold text-emerald-600">{fmtARS(totales.ingresos)}</p>
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className={`${CARD} px-5 py-4`}>
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Total ingresos</p>
+                <p className="text-emerald-600 font-bold text-lg tabular-nums mt-0.5">{fmtARS(totales.ingresos)}</p>
               </div>
-              <div className="text-right">
-                <p className="text-xs text-slate-400 mb-0.5">Total egresos</p>
-                <p className="font-semibold text-red-500">{fmtARS(totales.egresos)}</p>
+              <div className={`${CARD} px-5 py-4`}>
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Total egresos</p>
+                <p className="text-rose-600 font-bold text-lg tabular-nums mt-0.5">{fmtARS(totales.egresos)}</p>
               </div>
-              <div className="text-right border-l border-slate-100 pl-8">
-                <p className="text-xs text-slate-400 mb-0.5">Diferencia</p>
-                <p className={`font-extrabold text-base ${totales.diferencia >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+              <div className={`${CARD} px-5 py-4`}>
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Diferencia</p>
+                <p className={`font-extrabold text-lg tabular-nums mt-0.5 ${totales.diferencia >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                   {fmtARS(totales.diferencia)}
                 </p>
               </div>
@@ -1086,15 +1039,21 @@ export default function CashFlow() {
         <div className="mt-10">
           <button
             onClick={() => setMostrarDebitos(v => !v)}
-            className="w-full flex items-center justify-between bg-white border border-slate-100
-                       rounded-2xl px-5 py-3.5 shadow-sm hover:bg-slate-50/60 transition-colors"
+            className={`${CARD} w-full flex items-center justify-between gap-3 px-5 py-4 text-left transition-shadow hover:shadow-md`}
           >
-            <span className="text-sm font-bold text-slate-700">
-              Débitos automáticos
-              <span className="text-xs font-normal text-slate-400 ml-2">configuración de servicios recurrentes</span>
+            <span className="flex items-center gap-3.5">
+              <span className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${TONOS.amber}`}>
+                <Icono {...ICONOS.calendario} />
+              </span>
+              <span>
+                <span className="block text-sm font-bold text-slate-900">Débitos automáticos</span>
+                <span className="block text-xs text-slate-400 mt-0.5">Configuración de servicios recurrentes</span>
+              </span>
             </span>
-            <span className={`transition-transform duration-200 text-slate-400 ${mostrarDebitos ? 'rotate-180' : ''}`}>
-              <IconChevronDown />
+            <span className="w-8 h-8 rounded-full bg-slate-50 border border-slate-100 flex items-center justify-center shrink-0">
+              <span className={`transition-transform duration-200 text-slate-400 ${mostrarDebitos ? 'rotate-180' : ''}`}>
+                <IconChevronDown />
+              </span>
             </span>
           </button>
           {mostrarDebitos && (
@@ -1149,11 +1108,11 @@ function TablaCashFlow({
   }, [filas, saldoInicial])
 
   return (
-    <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+    <div className={`${CARD} overflow-hidden`}>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-100 bg-slate-50/80">
+            <tr className="border-b border-slate-100 bg-slate-50/70">
               <Th>Fecha pago</Th>
               <Th>Estado</Th>
               <Th>Categoría</Th>
@@ -1242,13 +1201,13 @@ function TablaCashFlow({
 
               return (
                 <tr key={fila.key}
-                  className={`border-b border-slate-100 last:border-0 transition-colors
+                  className={`border-b border-slate-100/80 last:border-0 transition-colors
                     ${m._virtual ? 'bg-slate-50/40' : saldoNeg ? 'bg-red-50/60' : 'hover:bg-slate-50/60'}`}>
-                  <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">
+                  <td className="px-3.5 py-3.5 text-slate-500 text-xs whitespace-nowrap">
                     {fmtFecha(m.fecha_pago)}
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full
+                  <td className="px-3.5 py-3.5">
+                    <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg
                       ${m.estado === 'ejecutado'
                         ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
                         : 'bg-slate-100 text-slate-500'}`}>
@@ -1266,13 +1225,13 @@ function TablaCashFlow({
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full
+                  <td className="px-3.5 py-3.5">
+                    <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg
                       ${BADGE_CAT[m.categoria] ?? 'bg-slate-100 text-slate-600'}`}>
                       {LABEL_CAT[m.categoria] ?? m.categoria}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-slate-700 max-w-[180px]">
+                  <td className="px-3.5 py-3.5 text-slate-700 max-w-[180px]">
                     {m.categoria === 'gasto_proyectado' ? (
                       <span className="truncate block italic text-slate-500"
                         title={`Presupuestado: ${fmtARS(m._presupuestado)} — Ya facturado: ${fmtARS(m._gastoReal)}`}>
@@ -1305,30 +1264,26 @@ function TablaCashFlow({
                       <span className="text-xs text-slate-400 block">Nº {m.numero_factura}</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
+                  <td className="px-3.5 py-3.5 text-slate-400 text-xs whitespace-nowrap">
                     {m.obras?.codigo ?? '—'}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
+                  <td className="px-3.5 py-3.5 text-right tabular-nums whitespace-nowrap">
                     {m.tipo === 'ingreso'
                       ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : m._virtual ? 'text-slate-400 font-semibold' : 'text-emerald-600 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
                       : <span className="text-slate-200 text-xs">—</span>}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
+                  <td className="px-3.5 py-3.5 text-right tabular-nums whitespace-nowrap">
                     {m.tipo === 'egreso'
-                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : m._virtual ? 'text-slate-400 font-semibold' : 'text-red-500 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
+                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : m._virtual ? 'text-slate-400 font-semibold' : 'text-rose-600 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
                       : <span className="text-slate-200 text-xs">—</span>}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
-                    <span className={`font-bold text-sm ${saldoNeg ? 'text-red-600' : 'text-slate-900'}`}>
+                  <td className="px-3.5 py-3.5 text-right tabular-nums whitespace-nowrap">
+                    <span className={`inline-block font-bold text-sm px-2.5 py-1 rounded-lg ${saldoNeg ? 'text-rose-600 bg-rose-50' : 'text-slate-900'}`}
+                      title={saldoNeg ? 'Saldo negativo' : undefined}>
                       {fmtARS(m.saldoAcumulado)}
                     </span>
-                    {saldoNeg && (
-                      <span className="block text-red-400 text-[10px] font-semibold leading-tight mt-0.5">
-                        ⚠ Saldo negativo
-                      </span>
-                    )}
                   </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <td className="px-3.5 py-3.5 text-right whitespace-nowrap">
                     {m._virtual ? (
                       <div className="flex items-center justify-end gap-3">
                         <button
@@ -1390,17 +1345,17 @@ function TablaCashFlow({
 
 function FilaSeparador({ label, saldoInicio }) {
   return (
-    <tr style={{ backgroundColor: '#e0f2fe' }} className="border-b border-cyan-100">
-      <td colSpan={5} className="px-4 py-2">
-        <span className="text-xs font-bold tracking-wide" style={{ color: '#0e7490' }}>
+    <tr className="bg-sky-50/80 border-y border-sky-100">
+      <td colSpan={5} className="px-4 py-2.5">
+        <span className="text-[13px] font-bold tracking-wide" style={{ color: '#0e7490' }}>
           {label}
         </span>
       </td>
-      <td colSpan={2} className="px-4 py-2 text-right">
-        <span className="text-xs text-slate-400">Saldo al inicio del mes</span>
+      <td colSpan={2} className="px-4 py-2.5 text-right">
+        <span className="text-[11px] font-medium text-slate-400">Saldo al inicio del mes</span>
       </td>
-      <td className="px-4 py-2 text-right tabular-nums">
-        <span className={`text-xs font-bold ${saldoInicio < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+      <td className="px-4 py-2.5 text-right tabular-nums">
+        <span className={`text-xs font-bold ${saldoInicio < 0 ? 'text-rose-600' : 'text-slate-700'}`}>
           {fmtARS(saldoInicio)}
         </span>
       </td>
@@ -1429,7 +1384,7 @@ function FilaAjusteSaldo({ mov, valor, guardando, error, onChange, onGuardar, on
               value={valor}
               onChange={e => onChange(e.target.value)}
               className="w-48 px-3 py-2 text-sm rounded-xl border border-amber-200 text-slate-900 bg-white
-                        focus:outline-none focus:ring-2 focus:border-transparent"
+                        transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400"
               autoFocus
             />
           </div>
@@ -1521,7 +1476,7 @@ function FilaProyeccion({ mov, nuevaFecha, guardando, error, onChangeFecha, onGu
                 value={nuevaFecha}
                 onChange={e => onChangeFecha(e.target.value)}
                 className="px-3 py-2 text-sm rounded-xl border border-violet-200 text-slate-900 bg-white
-                          focus:outline-none focus:ring-2 focus:border-transparent"
+                          transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400"
                 autoFocus
               />
             </div>
@@ -1576,7 +1531,7 @@ function FilaEditarFechaEstimada({ mov, nuevaFecha, nuevoConcepto, guardando, er
               value={nuevaFecha}
               onChange={e => onChangeFecha(e.target.value)}
               className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
-                        focus:outline-none focus:ring-2 focus:border-transparent"
+                        transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400"
               autoFocus
             />
           </div>
@@ -1590,7 +1545,7 @@ function FilaEditarFechaEstimada({ mov, nuevaFecha, nuevoConcepto, guardando, er
                 value={nuevoConcepto}
                 onChange={e => onChangeConcepto(e.target.value)}
                 className="px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white w-64
-                          focus:outline-none focus:ring-2 focus:border-transparent"
+                          transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400"
               />
             </div>
           )}
@@ -1771,24 +1726,11 @@ function CampoEdicion({ label, children }) {
 }
 
 const inputEdicionCls = `w-full px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
-  focus:outline-none focus:ring-2 focus:border-transparent`
-
-function CardResumen({ label, valor, subLabel, positivo, grande = false }) {
-  return (
-    <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
-      <p className="text-xs font-semibold text-slate-400 mb-2">{label}</p>
-      <p className={`font-extrabold tabular-nums ${grande ? 'text-2xl' : 'text-xl'}
-                     ${positivo ? (grande ? 'text-slate-900' : 'text-emerald-600') : 'text-red-600'}`}>
-        {valor}
-      </p>
-      {subLabel && <p className="text-xs text-slate-400 mt-1.5">{subLabel}</p>}
-    </div>
-  )
-}
+  transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400`
 
 function Th({ children, align = 'left' }) {
   return (
-    <th className={`px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide
+    <th className={`px-3.5 py-3.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap
                     ${align === 'right' ? 'text-right' : 'text-left'}`}>
       {children}
     </th>

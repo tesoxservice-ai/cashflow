@@ -7,6 +7,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
+import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium, CLS_LABEL, CLS_CAMPO, EstadoVacioPremium, CargandoPremium } from '../directorio/utilsDirectorio'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -254,15 +256,15 @@ export default function Obras() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
+    <div className={`min-h-screen flex flex-col ${esFinanzas ? CLASE_SIDEBAR : ''}`} style={{ backgroundColor: '#f0f7fa' }}>
+      {esFinanzas ? <SidebarFinanzas perfil={perfil} activo="obras" /> : <TopNav perfil={perfil} />}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+      <main className={`flex-1 w-full px-6 py-8 ${esFinanzas ? 'max-w-[1600px] lg:px-8' : 'max-w-7xl mx-auto'}`}>
 
         {/* Encabezado */}
         <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <button
+            {!esFinanzas && (<button
               onClick={() => navigate(breadcrumbRuta)}
               className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
               style={{ color: '#0e7490' }}
@@ -272,6 +274,7 @@ export default function Obras() {
               <IconBack />
               {breadcrumbLabel}
             </button>
+            )}
             <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Obras</h1>
             <p className="text-slate-400 text-sm mt-0.5">Administración del catálogo de obras de la empresa</p>
           </div>
@@ -279,7 +282,7 @@ export default function Obras() {
           <button
             onClick={() => { setMostrarAlta(v => !v); setErrorAlta(''); if (mostrarAlta) setForm(FORM_VACIO) }}
             className="shrink-0 inline-flex items-center gap-2 text-white text-sm font-semibold
-                       px-4 py-2.5 rounded-xl transition-colors shadow-sm"
+                       px-5 py-2.5 rounded-xl transition-colors shadow-[0_6px_16px_rgba(14,116,144,0.28)]"
             style={{ backgroundColor: '#0e7490' }}
             onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
             onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}
@@ -306,8 +309,14 @@ export default function Obras() {
 
         {/* Panel de alta */}
         {mostrarAlta && (
-          <div className="bg-white border border-slate-100 rounded-2xl p-6 mb-6 shadow-sm">
-            <h2 className="text-slate-800 font-bold text-sm mb-5">Nueva obra</h2>
+          <div className={`${CARD} p-5 sm:p-6 mb-6`}>
+            <div className="flex items-center gap-3 mb-5">
+              <span className={`w-10 h-10 rounded-xl flex items-center justify-center ${TONOS.teal}`}><Icono {...ICONOS.lista} /></span>
+              <div>
+                <h2 className="text-slate-900 font-bold text-sm leading-tight">Nueva obra</h2>
+                <p className="text-slate-400 text-xs mt-0.5">Los campos con * son obligatorios.</p>
+              </div>
+            </div>
             <form onSubmit={handleGuardarAlta} noValidate>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
@@ -343,7 +352,7 @@ export default function Obras() {
 
               <button type="submit" disabled={guardandoAlta}
                 className="inline-flex items-center gap-2 text-white text-sm font-semibold
-                           px-5 py-2.5 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                           px-5 py-2.5 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_6px_16px_rgba(14,116,144,0.28)]"
                 style={{ backgroundColor: '#0e7490' }}
                 onMouseEnter={e => !guardandoAlta && (e.currentTarget.style.backgroundColor = '#164e63')}
                 onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}
@@ -356,8 +365,19 @@ export default function Obras() {
         )}
 
         {/* Tabla */}
-        {cargando ? <EstadoCarga /> : obras.length === 0 ? <EstadoVacio /> : (
-          <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+        {!cargando && obras.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+            <CardPremium label="Obras en total" valor={String(obras.length)} icono={ico('lista')} tono="teal" color="text-slate-900" subLabel="En el catálogo" />
+            <CardPremium label="Obras activas" valor={String(obras.filter(o => o.activa).length)} icono={ico('subir')} tono="emerald" color="text-emerald-600" subLabel="Generan proyección" />
+            <CardPremium label="Obras inactivas" valor={String(obras.filter(o => !o.activa).length)} icono={ico('calendario')} tono="amber" color="text-slate-900" subLabel="Ya no proyectan" />
+          </div>
+        )}
+
+        {/* Tabla */}
+        {cargando ? <CargandoPremium texto="Cargando obras…" /> : obras.length === 0 ? (
+          <EstadoVacioPremium icono="lista" titulo="Sin obras cargadas" descripcion='Usá el botón "Nueva obra" para agregar la primera.' />
+        ) : (
+          <div className={`${CARD} overflow-hidden`}>
             {errorEdicion && (
               <div className="px-5 pt-4">
                 <MensajeError mensaje={errorEdicion} onCerrar={() => setErrorEdicion('')} />
@@ -366,7 +386,7 @@ export default function Obras() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50/80">
+                  <tr className="border-b border-slate-100 bg-slate-50/70">
                     <Th>Código</Th>
                     <Th>Nombre</Th>
                     <Th>Cliente</Th>
@@ -408,13 +428,13 @@ export default function Obras() {
 
 function FilaNormal({ obra, toggling, editandoOtra, onEditar, onToggle }) {
   return (
-    <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 transition-colors">
+    <tr className="border-b border-slate-100/80 last:border-0 hover:bg-slate-50/70 transition-colors">
       <td className="px-5 py-3.5 font-semibold text-slate-800 whitespace-nowrap">{obra.codigo}</td>
       <td className="px-5 py-3.5 text-slate-700">{obra.nombre}</td>
       <td className="px-5 py-3.5 text-slate-600">{obra.cliente}</td>
       <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">
         {obra.numero_compra
-          ? <span className="inline-block text-xs font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">{obra.numero_compra}</span>
+          ? <span className="inline-block text-[11px] font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">{obra.numero_compra}</span>
           : <span className="text-slate-300 text-xs">—</span>}
       </td>
       <td className="px-5 py-3.5 text-slate-600 whitespace-nowrap">{formatearFecha(obra.fecha_inicio)}</td>
@@ -425,11 +445,8 @@ function FilaNormal({ obra, toggling, editandoOtra, onEditar, onToggle }) {
       <td className="px-5 py-3.5">
         <div className="flex items-center justify-end gap-2 whitespace-nowrap">
           <button onClick={onEditar} disabled={editandoOtra || toggling}
-            className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg transition-colors
+            className="text-xs font-semibold text-cyan-800 bg-cyan-50 hover:bg-cyan-100 border border-cyan-100 px-3 py-1.5 rounded-lg transition-colors
                        disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ backgroundColor: '#0e7490' }}
-            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
-            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}
           >
             Editar
           </button>
@@ -440,9 +457,9 @@ function FilaNormal({ obra, toggling, editandoOtra, onEditar, onToggle }) {
             </span>
           ) : (
             <button onClick={onToggle} disabled={editandoOtra}
-              className={`text-xs font-semibold text-white px-3 py-1.5 rounded-lg transition-colors
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors
                          disabled:opacity-40 disabled:cursor-not-allowed
-                         ${obra.activa ? 'bg-slate-400 hover:bg-slate-500' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
+                         ${obra.activa ? 'text-slate-600 bg-white border-slate-200 hover:bg-slate-50' : 'text-emerald-700 bg-emerald-50 border-emerald-100 hover:bg-emerald-100'}`}>
               {obra.activa ? 'Desactivar' : 'Activar'}
             </button>
           )}
@@ -453,7 +470,7 @@ function FilaNormal({ obra, toggling, editandoOtra, onEditar, onToggle }) {
 }
 
 function FilaEdicion({ obra, valores, guardando, onChange, onGuardar, onCancelar }) {
-  const inputCls = `w-full px-2 py-1.5 text-sm rounded-lg border text-slate-900 focus:outline-none focus:ring-2 focus:border-transparent bg-white`
+  const inputCls = `w-full px-2 py-1.5 text-sm rounded-lg border text-slate-900 transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400 bg-white`
   const inputStyle = { borderColor: '#0e7490', '--tw-ring-color': '#0e7490' }
   return (
     <tr className="border-b border-slate-200 bg-cyan-50/40">
@@ -498,8 +515,8 @@ function FilaEdicion({ obra, valores, guardando, onChange, onGuardar, onCancelar
             {guardando ? 'Guardando…' : 'Guardar'}
           </button>
           <button onClick={onCancelar} disabled={guardando}
-            className="text-xs font-semibold bg-slate-200 hover:bg-slate-300 disabled:opacity-50
-                       text-slate-700 px-3 py-1.5 rounded-lg transition-colors">
+            className="text-xs font-semibold bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50
+                       text-slate-600 px-3 py-1.5 rounded-lg transition-colors">
             Cancelar
           </button>
         </div>
@@ -512,7 +529,7 @@ function FilaEdicion({ obra, valores, guardando, onChange, onGuardar, onCancelar
 
 function Th({ children, align = 'left' }) {
   return (
-    <th className={`px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide ${align === 'right' ? 'text-right' : 'text-left'}`}>
+    <th className={`px-5 py-3.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'}`}>
       {children}
     </th>
   )
@@ -520,23 +537,22 @@ function Th({ children, align = 'left' }) {
 
 function BadgeMoneda({ moneda }) {
   return moneda === 'USD'
-    ? <span className="inline-block text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-0.5 rounded-full">USD</span>
-    : <span className="inline-block text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">ARS</span>
+    ? <span className="inline-block text-[11px] font-semibold text-yellow-700 bg-yellow-50 px-2.5 py-1 rounded-lg">USD</span>
+    : <span className="inline-block text-[11px] font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg">ARS</span>
 }
 
 function BadgeEstado({ activa }) {
   return activa
-    ? <span className="inline-block text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-0.5 rounded-full">Activa</span>
-    : <span className="inline-block text-xs font-semibold text-slate-400 bg-slate-100 px-2.5 py-0.5 rounded-full">Inactiva</span>
+    ? <span className="inline-block text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg">Activa</span>
+    : <span className="inline-block text-[11px] font-semibold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg">Inactiva</span>
 }
 
 function CampoTexto({ label, placeholder, value, onChange }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</label>
+      <label className={CLS_LABEL}>{label}</label>
       <input type="text" placeholder={placeholder} value={value} onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900
-                   placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:border-transparent bg-white"
+        className={CLS_CAMPO + ' placeholder:text-slate-300'}
         style={{ '--tw-ring-color': '#0e7490' }}
       />
     </div>
@@ -546,10 +562,9 @@ function CampoTexto({ label, placeholder, value, onChange }) {
 function CampoFecha({ label, value, onChange }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</label>
+      <label className={CLS_LABEL}>{label}</label>
       <input type="date" value={value} onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900
-                   focus:outline-none focus:ring-2 focus:border-transparent bg-white"
+        className={CLS_CAMPO}
         style={{ '--tw-ring-color': '#0e7490' }}
       />
     </div>
@@ -559,10 +574,9 @@ function CampoFecha({ label, value, onChange }) {
 function CampoNumero({ label, placeholder, value, onChange }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</label>
+      <label className={CLS_LABEL}>{label}</label>
       <input type="number" min="0" step="0.01" placeholder={placeholder} value={value} onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900
-                   placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:border-transparent text-right bg-white"
+        className={CLS_CAMPO + ' placeholder:text-slate-300 text-right'}
         style={{ '--tw-ring-color': '#0e7490' }}
       />
     </div>
@@ -572,45 +586,14 @@ function CampoNumero({ label, placeholder, value, onChange }) {
 function CampoMoneda({ value, onChange }) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-slate-500 mb-1.5">Moneda</label>
+      <label className={CLS_LABEL}>Moneda</label>
       <select value={value} onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900
-                   bg-white focus:outline-none focus:ring-2 focus:border-transparent"
+        className={CLS_CAMPO}
         style={{ '--tw-ring-color': '#0e7490' }}
       >
         <option value="ARS">ARS — Peso argentino</option>
         <option value="USD">USD — Dólar estadounidense</option>
       </select>
-    </div>
-  )
-}
-
-function EstadoCarga() {
-  return (
-    <div className="flex items-center justify-center py-20 gap-3 text-slate-400">
-      <span className="w-5 h-5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
-      <span className="text-sm">Cargando obras…</span>
-    </div>
-  )
-}
-
-function EstadoVacio() {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 text-center bg-white rounded-2xl border border-slate-100 shadow-sm">
-      <div className="w-14 h-14 rounded-full flex items-center justify-center mb-4"
-        style={{ backgroundColor: '#e0f2fe', color: '#0e7490' }}>
-        <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round"
-            d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75
-               3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75
-               21v-3.375c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504
-               1.125 1.125V21M3 3h12m-.75 4.5H21m-3.75
-               3.75h.008v.008h-.008v-.008zm0 3h.008v.008h-.008v-.008zm0
-               3h.008v.008h-.008v-.008z" />
-        </svg>
-      </div>
-      <p className="text-slate-700 font-bold text-sm">Sin obras cargadas</p>
-      <p className="text-slate-400 text-sm mt-1 max-w-xs">Usá el botón "Nueva obra" para agregar la primera.</p>
     </div>
   )
 }

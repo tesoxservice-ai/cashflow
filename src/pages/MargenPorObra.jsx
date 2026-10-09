@@ -9,6 +9,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useAuth } from '../context/AuthContext'
+import SidebarFinanzas, { CLASE_SIDEBAR } from './finanzas/components/SidebarFinanzas'
+import { CARD, ico, CardResumen as CardPremium, CLS_LABEL, CLS_CAMPO, EstadoVacioPremium, CargandoPremium } from './directorio/utilsDirectorio'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -221,20 +223,21 @@ export default function MargenPorObra() {
   const periodoLabel = modoTodos ? 'Todos los períodos' : PERIODOS.find(p => p.value === periodo)?.label ?? periodo
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
+    <div className={`min-h-screen flex flex-col ${esFinanzas ? CLASE_SIDEBAR : ''}`} style={{ backgroundColor: '#f0f7fa' }}>
+      {esFinanzas ? <SidebarFinanzas perfil={perfil} activo="margen" /> : <TopNav perfil={perfil} />}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+      <main className={`flex-1 w-full px-6 py-8 ${esFinanzas ? 'max-w-[1600px] lg:px-8' : 'max-w-7xl mx-auto'}`}>
 
         {/* Encabezado */}
         <div className="mb-8">
-          <button onClick={() => navigate(breadcrumbRuta)}
+            {!esFinanzas && (<button onClick={() => navigate(breadcrumbRuta)}
             className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
             style={{ color: '#0e7490' }}
             onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
             onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}>
             <IconBack />{breadcrumbLabel}
           </button>
+            )}
           <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Margen por Obra</h1>
           <p className="text-slate-400 text-sm mt-0.5">
             Ingresos proyectados menos egresos presupuestados, por obra y período
@@ -242,7 +245,7 @@ export default function MargenPorObra() {
         </div>
 
         {/* Filtros */}
-        <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-6 shadow-sm">
+        <div className={`${CARD} p-4 sm:p-5 mb-5`}>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className={lbCls}>Obra</label>
@@ -271,47 +274,34 @@ export default function MargenPorObra() {
         )}
 
         {cargando ? (
-          <div className="flex items-center justify-center py-24 gap-3 text-slate-400">
-            <span className="w-5 h-5 border-2 border-slate-200 border-t-cyan-600 rounded-full animate-spin" />
-            <span className="text-sm">Calculando márgenes…</span>
-          </div>
+          <CargandoPremium texto="Calculando márgenes…" />
         ) : filas.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center bg-white rounded-2xl border border-slate-100 shadow-sm">
-            <div className="w-14 h-14 rounded-full flex items-center justify-center mb-4"
-              style={{ backgroundColor: '#e0f2fe', color: '#0e7490' }}>
-              <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0
-                     0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
-              </svg>
-            </div>
-            <p className="text-slate-700 font-bold text-sm">Sin ventas ni presupuesto para {periodoLabel.toLowerCase()}</p>
-            <p className="text-slate-400 text-xs mt-1">Probá con otro período.</p>
-          </div>
+          <EstadoVacioPremium titulo={`Sin ventas ni presupuesto para ${periodoLabel.toLowerCase()}`} descripcion="Probá con otro período." />
         ) : (
           <>
             {/* Cards resumen */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-              <CardResumen label="Ingresos proyectados" valor={fmtARS(totales.ingresos)} color="text-emerald-600" />
-              <CardResumen label="Egresos presupuestados" valor={fmtARS(totales.egresos)} color="text-red-600" />
-              <CardResumen label="Margen bruto" valor={fmtARS(totales.margen)}
+              <CardPremium label="Ingresos proyectados" valor={fmtARS(totales.ingresos)} icono={ico('subir')} tono="emerald" color="text-emerald-600"
+                subLabel="Ventas que espera Operaciones" />
+              <CardPremium label="Egresos presupuestados" valor={fmtARS(totales.egresos)} icono={ico('bajar')} tono="rose" color="text-red-600"
+                subLabel="Presupuesto de gastos" />
+              <CardPremium label="Margen bruto" valor={fmtARS(totales.margen)} icono={ico('tendencia')} tono={totales.margen >= 0 ? 'teal' : 'rose'}
                 color={totales.margen >= 0 ? 'text-emerald-600' : 'text-red-600'}
-                subLabel={totales.pct !== null ? `${fmtPct(totales.pct)} de margen sobre ingresos` : undefined} />
+                subLabel={totales.pct !== null ? `${fmtPct(totales.pct)} de margen sobre ingresos` : 'Sin ingresos proyectados'} />
             </div>
 
             {modoTodos && (
-              <p className="text-xs font-semibold px-3 py-1.5 rounded-full border inline-block mb-4"
-                style={{ backgroundColor: '#e0f2fe', color: '#0e7490', borderColor: '#a5f3fc' }}>
+              <p className="text-[11px] font-semibold px-3 py-1.5 rounded-lg inline-block mb-4 bg-sky-50 text-cyan-800">
                 Hacé clic en una obra para ver el desglose por mes
               </p>
             )}
 
             {/* Tabla */}
-            <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+            <div className={`${CARD} overflow-hidden`}>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 bg-slate-50/80">
+                    <tr className="border-b border-slate-100 bg-slate-50/70">
                       {modoTodos && <Th>{/* chevron */}</Th>}
                       <Th>Obra</Th>
                       <Th align="right">Ingresos proyectados</Th>
@@ -329,7 +319,7 @@ export default function MargenPorObra() {
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr style={{ backgroundColor: '#e0f2fe' }} className="border-t-2 border-cyan-100">
+                    <tr className="bg-sky-50/80 border-t border-sky-100">
                       {modoTodos && <td />}
                       <td className="px-5 py-3.5 text-sm font-bold" style={{ color: '#0e7490' }}>Total general</td>
                       <td className="px-5 py-3.5 text-right font-bold tabular-nums text-emerald-700">{fmtARS(totales.ingresos)}</td>
@@ -357,7 +347,7 @@ export default function MargenPorObra() {
 function FilaObra({ fila }) {
   const negativo = fila.margen < 0
   return (
-    <tr className={`border-b border-slate-100 last:border-0 transition-colors ${negativo ? 'bg-red-50/60' : 'hover:bg-slate-50/60'}`}>
+    <tr className={`border-b border-slate-100/80 last:border-0 transition-colors ${negativo ? 'bg-red-50/60' : 'hover:bg-slate-50/70'}`}>
       <td className="px-5 py-3.5 text-xs text-slate-700">
         <span className="font-semibold text-slate-800">{fila.codigo}</span>
         <span className="text-slate-300 mx-1.5">·</span>{fila.nombre}
@@ -436,23 +426,13 @@ function FilaObraTodos({ fila, expandido, onToggle }) {
 
 // ─── Sub-componentes ──────────────────────────────────────────────────────────
 
-function CardResumen({ label, valor, color, subLabel }) {
-  return (
-    <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
-      <p className="text-xs font-semibold text-slate-400 mb-1">{label}</p>
-      <p className={`text-xl font-extrabold tabular-nums ${color}`}>{valor}</p>
-      {subLabel && <p className="text-xs text-slate-400 mt-1">{subLabel}</p>}
-    </div>
-  )
-}
-
 function Th({ children, align = 'left' }) {
   return (
-    <th className={`px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'}`}>
+    <th className={`px-5 py-3.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'}`}>
       {children}
     </th>
   )
 }
 
-const lbCls = 'block text-xs font-semibold text-slate-500 mb-1.5'
-const selCls = `w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white focus:outline-none focus:ring-2 focus:border-transparent`
+const lbCls = CLS_LABEL
+const selCls = CLS_CAMPO

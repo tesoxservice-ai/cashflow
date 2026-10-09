@@ -14,6 +14,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../../supabaseClient'
+import { TONOS, Icono, ICONOS, CLS_LABEL, CLS_CAMPO } from '../../directorio/utilsDirectorio'
 
 // ── Utilidad de formato de moneda ──────────────────────────────
 function fmt(n) {
@@ -86,37 +87,42 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
   // ── Etiquetas de tipo de nota ──────────────────────────────
   const labelTipo = t => t === 'credito' ? 'Nota de crédito' : 'Nota de débito'
   const clsTipo   = t => t === 'credito'
-    ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
-    : 'bg-orange-50 text-orange-700 border border-orange-100'
+    ? 'bg-emerald-50 text-emerald-700'
+    : 'bg-orange-50 text-orange-700'
 
   return (
     /* Overlay oscuro */
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-[2px] px-4"
       onClick={e => { if (e.target === e.currentTarget) onCerrar() }}
     >
       {/* Panel del modal */}
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh]
+      <div className="bg-white rounded-2xl shadow-[0_24px_60px_rgba(15,23,42,0.25)] w-full max-w-2xl max-h-[90vh]
                       flex flex-col overflow-hidden">
 
         {/* ── Cabecera ────────────────────────────────────────── */}
-        <div className="flex items-center justify-between px-6 py-4
-                        border-b border-slate-200 shrink-0">
-          <div>
-            <h2 className="text-slate-900 font-semibold text-base">
-              Notas de la factura
-            </h2>
-            <p className="text-slate-500 text-xs mt-0.5">
-              {movimiento.proveedor_cliente ?? '—'}
-              {movimiento.numero_factura ? ` · Nº ${movimiento.numero_factura}` : ''}
-            </p>
+        <div className="flex items-center justify-between gap-3 px-6 py-4
+                        border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <span className={`w-11 h-11 shrink-0 rounded-xl flex items-center justify-center ${TONOS.amber}`}>
+              <Icono {...ICONOS.lista} className="w-5 h-5" />
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-slate-900 font-bold text-base leading-tight">
+                Notas de la factura
+              </h2>
+              <p className="text-slate-400 text-xs mt-0.5 truncate">
+                {movimiento.proveedor_cliente ?? '—'}
+                {movimiento.numero_factura ? ` · Nº ${movimiento.numero_factura}` : ''}
+              </p>
+            </div>
           </div>
           <button
             onClick={onCerrar}
-            className="text-slate-400 hover:text-slate-700 transition-colors"
+            className="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
             aria-label="Cerrar"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24"
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24"
                  strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -137,12 +143,12 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
           {/* Lista de notas */}
           {cargando ? (
             <div className="flex items-center gap-2 text-slate-500 text-sm py-4">
-              <span className="w-4 h-4 border-2 border-slate-300 border-t-blue-500
+              <span className="w-4 h-4 border-2 border-slate-200 border-t-cyan-600
                                rounded-full animate-spin" />
               Cargando notas…
             </div>
           ) : notas.length === 0 ? (
-            <p className="text-slate-400 text-sm py-2">
+            <p className="text-slate-400 text-sm py-4 text-center bg-slate-50/60 rounded-xl border border-dashed border-slate-200">
               Esta factura no tiene notas todavía.
             </p>
           ) : (
@@ -150,12 +156,12 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
               {notas.map(n => (
                 <div key={n.id}
                      className="flex items-start justify-between gap-3
-                                bg-slate-50 border border-slate-200
-                                rounded-lg px-4 py-3">
+                                bg-slate-50/70 border border-slate-100
+                                rounded-xl px-4 py-3">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       {/* Badge tipo */}
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${clsTipo(n.tipo_nota)}`}>
+                      <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg ${clsTipo(n.tipo_nota)}`}>
                         {labelTipo(n.tipo_nota)}
                       </span>
                       {/* Número de nota */}
@@ -201,13 +207,13 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
           )}
 
           {/* ── Formulario para agregar nota ────────────────────── */}
-          <div className="border-t border-slate-200 pt-5">
-            <h3 className="text-slate-700 font-medium text-sm mb-4">Agregar nota</h3>
+          <div className="border-t border-slate-100 pt-5">
+            <h3 className="text-slate-900 font-bold text-sm mb-4">Agregar nota</h3>
             <form onSubmit={handleGuardar} noValidate className="space-y-3">
               {/* Fila 1: Tipo · Número · Monto */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">Tipo</label>
+                  <label className={CLS_LABEL}>Tipo</label>
                   <select
                     value={form.tipo_nota}
                     onChange={e => setForm(f => ({ ...f, tipo_nota: e.target.value }))}
@@ -218,7 +224,7 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                  <label className={CLS_LABEL}>
                     Número de nota
                   </label>
                   <input
@@ -230,7 +236,7 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                  <label className={CLS_LABEL}>
                     Monto *
                   </label>
                   <input
@@ -244,7 +250,7 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
               </div>
               {/* Concepto */}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                <label className={CLS_LABEL}>
                   Concepto
                 </label>
                 <input
@@ -268,9 +274,10 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
               <button
                 type="submit"
                 disabled={guardando}
-                className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700
-                           disabled:opacity-50 text-white text-sm font-medium
-                           px-4 py-2 rounded-lg transition-colors"
+                className="inline-flex items-center gap-2 text-white text-sm font-semibold
+                           px-5 py-2.5 rounded-xl transition-colors disabled:opacity-50
+                           shadow-[0_6px_16px_rgba(14,116,144,0.28)] hover:brightness-90"
+                style={{ backgroundColor: '#0e7490' }}
               >
                 {guardando && (
                   <span className="w-4 h-4 border-2 border-white/30 border-t-white
@@ -288,19 +295,15 @@ export default function ModalNotas({ movimiento, onCerrar, userId }) {
 }
 
 // ── Helpers de clases ──────────────────────────────────────────
-const inputCls = `w-full px-3 py-2 text-sm rounded-lg border border-slate-200
-  text-slate-900 placeholder:text-slate-400
-  focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent`
+const inputCls = CLS_CAMPO + ' placeholder:text-slate-300'
 
-const selectCls = `w-full px-3 py-2 text-sm rounded-lg border border-slate-200
-  text-slate-900 bg-white
-  focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent`
+const selectCls = CLS_CAMPO
 
 // ── Subcomponente: celda de resumen de monto ──────────────────
 function ResumenItem({ label, valor, color = 'text-slate-800', bold = false }) {
   return (
-    <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-      <p className="text-xs text-slate-500 mb-0.5">{label}</p>
+    <div className="bg-slate-50/70 border border-slate-100 rounded-xl px-3.5 py-2.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-0.5">{label}</p>
       <p className={`text-sm tabular-nums ${color} ${bold ? 'font-bold' : 'font-medium'}`}>
         {valor}
       </p>
