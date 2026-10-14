@@ -155,6 +155,11 @@ export default function Presupuestos() {
   const [guardandoEdicion,    setGuardandoEdicion]    = useState(false)
   const [errorEdicion,        setErrorEdicion]        = useState('')
   const [eliminando,          setEliminando]          = useState(null)
+  // Replicar una línea a los meses siguientes (igual que el abono en Ventas proyectadas)
+  const [modalReplicar,  setModalReplicar]  = useState(null)
+  const [mesesReplicar,  setMesesReplicar]  = useState(3)
+  const [replicando,     setReplicando]     = useState(false)
+  const [errorReplicar,  setErrorReplicar]  = useState('')
 
   useEffect(() => {
     async function cargarMaestros() {
@@ -242,6 +247,35 @@ export default function Presupuestos() {
     const { error } = await supabase.from('presupuestos').delete().eq('id', id)
     if (error) { setErrorGlobal('No se pudo eliminar el presupuesto.'); setEliminando(null); return }
     setEliminando(null)
+    await cargarPresupuestos(obraSeleccionada)
+  }
+
+  const clavePeriodoLinea = x => `${x.periodo}|${x.rubro_id}|${(x.concepto ?? '').trim().toLowerCase()}`
+
+  // Meses que se van a crear al replicar, y cuáles ya tienen esa misma línea
+  function planReplicar(linea, cantidad) {
+    const base = new Date(linea.periodo + 'T00:00:00')
+    const existentes = new Set(presupuestos.map(clavePeriodoLinea))
+    const nuevos = [], omitidos = []
+    for (let i = 1; i <= cantidad; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() + i, 1)
+      const periodo = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+      ;(existentes.has(clavePeriodoLinea({ ...linea, periodo })) ? omitidos : nuevos).push(periodo)
+    }
+    return { nuevos, omitidos }
+  }
+
+  async function handleReplicar() {
+    if (!modalReplicar || mesesReplicar < 1) return
+    const { nuevos } = planReplicar(modalReplicar, mesesReplicar)
+    if (nuevos.length === 0) { setErrorReplicar('Esa línea ya existe en todos esos meses.'); return }
+    setReplicando(true); setErrorReplicar('')
+    const { error } = await supabase.from('presupuestos').insert(nuevos.map(periodo => ({
+      obra_id: obraSeleccionada, rubro_id: modalReplicar.rubro_id, concepto: modalReplicar.concepto,
+      periodo, monto: Number(modalReplicar.monto), created_by: user.id,
+    })))
+    if (error) { setErrorReplicar('Error al replicar. Intentá de nuevo.'); setReplicando(false); return }
+    setModalReplicar(null); setReplicando(false)
     await cargarPresupuestos(obraSeleccionada)
   }
 
@@ -383,7 +417,7 @@ export default function Presupuestos() {
                             <th className="text-left px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Concepto</th>
                             <th className="text-left px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide w-44">Período</th>
                             <th className="text-right px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide w-44">Monto</th>
-                            <th className="px-5 py-3 w-36" />
+                            <th className="px-5 py-3 w-52" />
                           </tr>
                         </thead>
                         <tbody>
@@ -398,6 +432,7 @@ export default function Presupuestos() {
                               onCancelarEdicion={() => { setFilaEditando(null); setValoresEdicion({}); setErrorEdicion('') }}
                               onGuardarEdicion={handleGuardarEdicion}
                               onEliminar={handleEliminar}
+                              onReplicar={p => { setModalReplicar(p); setMesesReplicar(3); setErrorReplicar('') }}
                               onChangeEdicion={(campo, valor) => setValoresEdicion(v => ({ ...v, [campo]: valor }))}
                             />
                           ))}
@@ -427,6 +462,60 @@ export default function Presupuestos() {
           </>
         )}
       </main>
+
+      {/* Modal replicar línea de presupuesto */}
+      {modalReplicar && (() => {
+        const { nuevos, omitidos } = planReplicar(modalReplicar, Math.max(0, mesesReplicar || 0))
+        return (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-slate-900 font-extrabold text-base">Replicar presupuesto</h3>
+                  <p className="text-slate-400 text-sm mt-0.5">
+                    {modalReplicar.rubros?.nombre ?? '—'} · {modalReplicar.concepto}
+                  </p>
+                  <p className="text-slate-400 text-sm">
+                    {formatearPeriodo(modalReplicar.periodo)} · {formatearPesos(modalReplicar.monto)}
+                  </p>
+                </div>
+                <button onClick={() => setModalReplicar(null)} className="text-slate-300 hover:text-slate-500 transition-colors">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <label className={lbCls}>Cantidad de meses a replicar</label>
+              <input type="number" min="1" max="24" value={mesesReplicar}
+                onChange={e => setMesesReplicar(Number(e.target.value))}
+                className={`${inCls} mb-3`} />
+              {nuevos.length > 0 && (
+                <p className="text-xs text-slate-500 mb-3">
+                  Se crea en: {nuevos.map(formatearPeriodo).join(', ')}.
+                </p>
+              )}
+              {omitidos.length > 0 && (
+                <p className="text-xs text-amber-600 mb-3">
+                  {omitidos.length} mes{omitidos.length === 1 ? '' : 'es'} ya tiene{omitidos.length === 1 ? '' : 'n'} esta línea y se saltea{omitidos.length === 1 ? '' : 'n'}.
+                </p>
+              )}
+              {errorReplicar && <p className="text-red-600 text-xs mb-3">{errorReplicar}</p>}
+              <div className="flex gap-3">
+                <button onClick={handleReplicar} disabled={replicando || nuevos.length === 0}
+                  className="flex-1 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-sm"
+                  style={{ backgroundColor: '#0e7490' }}>
+                  {replicando && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+                  {replicando ? 'Replicando…' : `Replicar ${nuevos.length} ${nuevos.length === 1 ? 'mes' : 'meses'}`}
+                </button>
+                <button onClick={() => setModalReplicar(null)} disabled={replicando}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 text-sm font-semibold py-2.5 rounded-xl transition-colors">
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -435,7 +524,7 @@ export default function Presupuestos() {
 
 function GrupoRubro({ grupo, rubros, periodos, esUltimo, filaEditando, valoresEdicion,
   guardandoEdicion, eliminando, onIniciarEdicion, onCancelarEdicion,
-  onGuardarEdicion, onEliminar, onChangeEdicion }) {
+  onGuardarEdicion, onEliminar, onReplicar, onChangeEdicion }) {
   return (
     <>
       {grupo.filas.map(p => (
@@ -447,6 +536,7 @@ function GrupoRubro({ grupo, rubros, periodos, esUltimo, filaEditando, valoresEd
               onCancelar={onCancelarEdicion} />
           : <FilaNormal key={p.id} presupuesto={p} esEliminar={eliminando === p.id}
               onEditar={() => onIniciarEdicion(p)}
+              onReplicar={() => onReplicar(p)}
               onEliminar={() => onEliminar(p.id)} />
       ))}
       <tr style={{ backgroundColor: '#f0f9ff' }}
@@ -465,7 +555,7 @@ function GrupoRubro({ grupo, rubros, periodos, esUltimo, filaEditando, valoresEd
 
 // ─── FilaNormal ───────────────────────────────────────────────────────────────
 
-function FilaNormal({ presupuesto: p, esEliminar, onEditar, onEliminar }) {
+function FilaNormal({ presupuesto: p, esEliminar, onEditar, onReplicar, onEliminar }) {
   return (
     <tr className="border-b border-slate-100 hover:bg-slate-50/60 transition-colors">
       <td className="px-5 py-3.5 text-slate-700 text-sm">{p.rubros?.nombre ?? '—'}</td>
@@ -483,6 +573,13 @@ function FilaNormal({ presupuesto: p, esEliminar, onEditar, onEliminar }) {
             onMouseEnter={e => e.currentTarget.style.backgroundColor = '#164e63'}
             onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0e7490'}>
             Editar
+          </button>
+          <button onClick={onReplicar} disabled={esEliminar}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors border disabled:opacity-40"
+            style={{ backgroundColor: '#e0f2fe', color: '#0e7490', borderColor: '#a5f3fc' }}
+            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#cffafe'}
+            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#e0f2fe'}>
+            Replicar
           </button>
           {esEliminar ? (
             <span className="flex items-center gap-1.5 text-xs text-red-500 px-2">
