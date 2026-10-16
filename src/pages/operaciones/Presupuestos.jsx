@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import SidebarFinanzas, { CLASE_SIDEBAR } from '../finanzas/components/SidebarFinanzas'
 
 function formatearPesos(valor) {
   return new Intl.NumberFormat('es-AR', {
@@ -139,6 +140,8 @@ function TopNav({ perfil }) {
 export default function Presupuestos() {
   const { user, perfil } = useAuth()
   const navigate = useNavigate()
+  // La misma pantalla la usa Operaciones (TopNav, como siempre) y Santiago desde Finanzas (barra lateral).
+  const esFinanzas = perfil?.rol === 'finanzas'
 
   const [obras,  setObras]  = useState([])
   const [rubros, setRubros] = useState([])
@@ -295,21 +298,21 @@ export default function Presupuestos() {
   const totalGeneral = presupuestos.reduce((acc, p) => acc + Number(p.monto), 0)
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#f0f7fa' }}>
-      <TopNav perfil={perfil} />
+    <div className={`min-h-screen flex flex-col ${esFinanzas ? CLASE_SIDEBAR : ''}`} style={{ backgroundColor: '#f0f7fa' }}>
+      {esFinanzas ? <SidebarFinanzas perfil={perfil} activo="presupuestos" /> : <TopNav perfil={perfil} />}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+      <main className={`flex-1 w-full px-6 py-8 ${esFinanzas ? 'max-w-[1600px] lg:px-8' : 'max-w-7xl mx-auto'}`}>
 
         {/* Encabezado */}
         <div className="mb-8">
-          <button onClick={() => navigate('/operaciones')}
+          {!esFinanzas && <button onClick={() => navigate('/operaciones')}
             className="text-sm font-medium flex items-center gap-1.5 mb-2 transition-colors"
             style={{ color: '#0e7490' }}
             onMouseEnter={e => e.currentTarget.style.color = '#164e63'}
             onMouseLeave={e => e.currentTarget.style.color = '#0e7490'}>
             <IconBack />
             Panel de Operaciones
-          </button>
+          </button>}
           <h1 className="text-slate-900 text-2xl font-extrabold tracking-tight">Presupuestos</h1>
           <p className="text-slate-400 text-sm mt-0.5">Cargá y editá el presupuesto mensual por obra y rubro</p>
         </div>

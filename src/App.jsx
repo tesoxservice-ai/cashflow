@@ -18,6 +18,14 @@ import Historial                    from './pages/finanzas/Historial'
 import MargenPorObra                from './pages/MargenPorObra'
 import DashboardDirectorio          from './pages/directorio/Dashboard'
 import ProtectedRoute               from './components/ProtectedRoute'
+import { useAuth }                  from './context/AuthContext'
+import { puedeEditarPresupuestosEnFinanzas } from './lib/permisos'
+
+// Presupuestos dentro de Finanzas: solo quien tiene el permiso puntual (Santiago). El resto vuelve al inicio.
+function SoloEditorPresupuestos({ children }) {
+  const { user } = useAuth()
+  return puedeEditarPresupuestosEnFinanzas(user) ? children : <Navigate to="/finanzas" replace />
+}
 
 export default function App() {
   return (
@@ -57,6 +65,9 @@ export default function App() {
       } />
       <Route path="/finanzas/presupuesto" element={
         <ProtectedRoute rolRequerido="finanzas"><PresupuestoVsReal /></ProtectedRoute>
+      } />
+      <Route path="/finanzas/presupuestos" element={
+        <ProtectedRoute rolRequerido="finanzas"><SoloEditorPresupuestos><Presupuestos /></SoloEditorPresupuestos></ProtectedRoute>
       } />
       <Route path="/finanzas/ventas" element={
         <ProtectedRoute rolRequerido="finanzas"><VentasProyectadasFin /></ProtectedRoute>
