@@ -117,16 +117,23 @@ export default function Historial() {
   // Listas para los filtros
   useEffect(() => {
     supabase.from('obras').select('id, codigo, nombre').order('codigo').then(({ data }) => setObras(data ?? []))
-    supabase.from('historial').select('usuario_id, usuario_nombre, usuario_rol')
-      .order('creado_en', { ascending: false }).limit(3000)
-      .then(({ data }) => {
-        const mapa = new Map()
-        ;(data ?? []).forEach(r => {
-          const k = r.usuario_id ?? '__sistema'
-          if (!mapa.has(k)) mapa.set(k, { id: k, nombre: r.usuario_nombre, rol: r.usuario_rol })
-        })
-        setUsuarios([...mapa.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')))
+    // Usuarios del filtro: todos los de la tabla `usuarios` (aunque todavía no hayan hecho nada)
+    // más los que ya figuran en el historial (por si alguno se borró).
+    Promise.all([
+      supabase.from('usuarios').select('id, nombre, apellido, rol'),
+      supabase.from('historial').select('usuario_id, usuario_nombre, usuario_rol')
+        .order('creado_en', { ascending: false }).limit(3000),
+    ]).then(([{ data: tabla }, { data: hist }]) => {
+      const mapa = new Map()
+      ;(tabla ?? []).forEach(u => mapa.set(u.id, {
+        id: u.id, nombre: `${u.nombre ?? ''} ${u.apellido ?? ''}`.trim() || 'Sin nombre', rol: u.rol,
+      }))
+      ;(hist ?? []).forEach(r => {
+        const k = r.usuario_id ?? '__sistema'
+        if (!mapa.has(k)) mapa.set(k, { id: k, nombre: r.usuario_nombre, rol: r.usuario_rol })
       })
+      setUsuarios([...mapa.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')))
+    })
   }, [])
 
   const cargar = useCallback(async (offset) => {
