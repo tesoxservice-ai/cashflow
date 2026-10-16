@@ -29,6 +29,9 @@
 // entera en uno de los primeros 4 miércoles del mes siguiente. El reparto es
 // "al azar" pero estable (no cambia al recargar ni entre usuarios) y parejo en
 // cantidad de filas. Las facturas se siguen descontando igual que antes.
+//
+// Excepción (DIVIDIR_EN_MIERCOLES): una línea muy grande y poco real se reparte en partes iguales
+// entre los 4 miércoles, en vez de caer entera en uno solo.
 
 export function ultimoDiaPeriodo(periodo) {
   const [anio, mes] = periodo.split('-').map(Number)
@@ -52,6 +55,21 @@ function inicioMesAnteriorA(fecha) {
 const PAGO_A_30_DIAS_DESDE = '2026-10-01'
 const CANTIDAD_MIERCOLES_DE_PAGO = 4
 const pagaA30Dias = periodo => periodo >= PAGO_A_30_DIAS_DESDE
+
+// Líneas (obra + rubro + período) que NO caen enteras en un miércoles: su saldo sin facturar se divide
+// en partes iguales entre los 4 miércoles de pago. Es una decisión puntual de Finanzas, no una regla general.
+//   - Obra 678 (Proyecto 2000 Cámaras - Santa Fe) · Subcontratos · octubre 2026 ($ 241.412.500)
+// Si Finanzas le pone una fecha a mano ("Editar fecha") o la cierra, esa decisión manda y no se divide.
+const DIVIDIR_EN_MIERCOLES = new Set([
+  '70be9f6d-fc01-423a-a978-24ec9f8cbe27|9a94f4be-7ea9-49a3-ad21-823e72dedaab|2026-10-01',
+])
+
+// Divide un monto en `n` partes iguales al centavo; la última absorbe el resto para que la suma sea exacta.
+function dividirEnPartes(monto, n) {
+  const centavos = Math.round(monto * 100)
+  const base = Math.floor(centavos / n)
+  return Array.from({ length: n }, (_, i) => (i === n - 1 ? centavos - base * (n - 1) : base) / 100)
+}
 
 function isoLocalDe(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -150,6 +168,17 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
     if (saldoProyectado <= 0) return
     const [obra_id, rubro_id, periodo] = k.split('|')
     let fechaPago = fechaEstimadaPorClave[k] // si Finanzas puso una fecha, esa manda
+    if (!fechaPago && DIVIDIR_EN_MIERCOLES.has(k) && pagaA30Dias(periodo)) {
+      const fechas = primerosMiercolesDelMesSiguiente(periodo, CANTIDAD_MIERCOLES_DE_PAGO)
+      const montos = dividirEnPartes(saldoProyectado, fechas.length)
+      fechas.forEach((f, i) => {
+        // Igual que el resto: una parte nunca queda en el pasado (se corre al próximo miércoles).
+        const fechaParte = f <= hoyISO ? proximoMiercoles : f
+        resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i],
+          fechaPago: fechaParte, parte: i + 1, partes: fechas.length })
+      })
+      return
+    }
     if (!fechaPago) {
       fechaPago = miercolesPorClave[k] ?? ultimoDiaPeriodo(periodo)
       // Si el miércoles asignado ya pasó y todavía queda gasto sin facturar, se corre al próximo
@@ -170,7 +199,7 @@ export function construirFilaVirtual(proyectado, obras, rubros) {
   const rubro = rubros.find(r => r.id === proyectado.rubro_id)
   const key = `${proyectado.obra_id}|${proyectado.rubro_id}|${proyectado.periodo}`
   return {
-    id: `virtual-${key}`,
+    id: proyectado.parte ? `virtual-${key}|parte-${proyectado.parte}` : `virtual-${key}`,
     _virtual: true,
     _presupuestado: proyectado.presupuestado,
     _gastoReal: proyectado.gastoReal,
@@ -179,7 +208,9 @@ export function construirFilaVirtual(proyectado, obras, rubros) {
     categoria: 'gasto_proyectado',
     proveedor_cliente: null,
     numero_factura: null,
-    concepto: 'Saldo de presupuesto todavía sin facturar',
+    concepto: proyectado.parte
+      ? `Saldo de presupuesto todavía sin facturar (parte ${proyectado.parte} de ${proyectado.partes})`
+      : 'Saldo de presupuesto todavía sin facturar',
     observaciones: null,
     periodo: proyectado.periodo,
     fecha_pago: proyectado.fechaPago,
