@@ -7,6 +7,7 @@
 // (definidas en .env, nunca hardcodeadas en el código).
 
 import { createClient } from '@supabase/supabase-js'
+import { crearFetchCompleto } from './lib/fetchCompleto'
 
 // URL del proyecto Supabase (ej: https://xyzxyz.supabase.co)
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
@@ -24,4 +25,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 // Exportación del cliente listo para usar en toda la app
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// El fetch propio completa solo las consultas que Supabase corta en 1000 filas (ver lib/fetchCompleto.js).
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  global: { fetch: crearFetchCompleto() },
+})

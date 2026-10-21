@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'
+import { traerTodo } from '../../lib/traerTodo'
 import { useAuth } from '../../context/AuthContext'
 import GraficoCashflow from './GraficoCashflow'
 import { BarraEscenarios, PanelFecha, AlertasEscenario } from './PanelEscenarios'
@@ -136,11 +137,11 @@ async function cargarDatosExportDirectorio() {
     { data: fechasEstGasto, error: e10 },
     { data: fechasEstVenta, error: e11 },
   ] = await Promise.all([
-    supabase.from('movimientos')
+    traerTodo(() => supabase.from('movimientos')
       .select('id,tipo,categoria,proveedor_cliente,numero_factura,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,concepto,estado_proyeccion')
       .order('fecha_pago', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true })
-      .order('id', { ascending: true }),
+      .order('id', { ascending: true })),
     supabase.from('saldos_iniciales').select('id,cuenta_id,monto,fecha,created_at')
       .order('fecha', { ascending: false }).order('created_at', { ascending: false }),
     supabase.from('notas').select('movimiento_id,tipo_nota,monto'),
@@ -150,8 +151,8 @@ async function cargarDatosExportDirectorio() {
     supabase.from('movimientos')
       .select('id,tipo,categoria,monto_bruto,obra_id,rubro_id,concepto,proveedor_cliente')
       .eq('periodo', periodo).eq('categoria', 'factura').eq('tipo', 'egreso'),
-    supabase.from('presupuestos').select('id,obra_id,rubro_id,periodo,monto'),
-    supabase.from('ventas_proyectadas').select('id,obra_id,periodo,monto,registrado'),
+    traerTodo(() => supabase.from('presupuestos').select('id,obra_id,rubro_id,periodo,monto').order('id')),
+    traerTodo(() => supabase.from('ventas_proyectadas').select('id,obra_id,periodo,monto,registrado').order('id')),
     supabase.from('gasto_proyectado_fecha_estimada').select('obra_id,rubro_id,periodo,fecha_estimada,cerrado'),
     supabase.from('venta_proyectada_fecha_estimada').select('obra_id,periodo,fecha_estimada,cerrado,concepto'),
   ])
@@ -777,9 +778,9 @@ function TabCashFlow() {
       .then(({ data }) => setObras(data ?? []))
     supabase.from('rubros').select('id, nombre, tipo, activo').eq('activo', true).order('nombre')
       .then(({ data }) => setRubros(data ?? []))
-    supabase.from('presupuestos').select('id, obra_id, rubro_id, periodo, monto')
+    traerTodo(() => supabase.from('presupuestos').select('id, obra_id, rubro_id, periodo, monto').order('id'))
       .then(({ data }) => setPresupuestos(data ?? []))
-    supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado')
+    traerTodo(() => supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado').order('id'))
       .then(({ data }) => setVentasProyectadas(data ?? []))
     supabase.from('gasto_proyectado_fecha_estimada').select('obra_id, rubro_id, periodo, fecha_estimada, cerrado')
       .then(({ data }) => setFechasEstimadasGasto(data ?? []))
@@ -801,7 +802,7 @@ function TabCashFlow() {
     const { silencioso = false } = opts
     if (silencioso) setActualizando(true); else setCargando(true)
     setError('')
-    const { data: movData, error: movErr } = await supabase
+    const { data: movData, error: movErr } = await traerTodo(() => supabase
       .from('movimientos')
       .select(`
         id, tipo, categoria, proveedor_cliente, numero_factura,
@@ -814,7 +815,7 @@ function TabCashFlow() {
       `)
       .order('fecha_pago', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true })
-      .order('id',         { ascending: true })
+      .order('id',         { ascending: true }))
 
     if (movErr) { setError('No se pudieron cargar los movimientos.'); setCargando(false); setActualizando(false); return }
 

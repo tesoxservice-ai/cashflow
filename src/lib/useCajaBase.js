@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../supabaseClient'
+import { traerTodo } from './traerTodo'
 import { combinarConProyeccion } from './proyeccionPresupuesto'
 import { useFimaDatos, construirBase, simular } from '../pages/directorio/escenarios'
 
@@ -29,7 +30,7 @@ export default function useCajaBase() {
         { data: obras }, { data: rubros }, { data: presupuestos }, { data: ventas },
         { data: fechasGasto }, { data: fechasVenta },
       ] = await Promise.all([
-        supabase.from('movimientos').select(`
+        traerTodo(() => supabase.from('movimientos').select(`
           id, tipo, categoria, proveedor_cliente, numero_factura, monto_bruto, monto_neto, concepto,
           periodo, fecha_pago, estado, cuenta_id, obra_id, rubro_id, created_at,
           estado_proyeccion, fecha_pago_original, fondo_id,
@@ -37,14 +38,14 @@ export default function useCajaBase() {
         `)
           .order('fecha_pago', { ascending: true, nullsFirst: false })
           .order('created_at', { ascending: true })
-          .order('id', { ascending: true }),
+          .order('id', { ascending: true })),
         supabase.from('notas').select('movimiento_id, tipo_nota, monto'),
         supabase.from('saldos_iniciales').select('id, cuenta_id, monto, fecha, created_at')
           .order('fecha', { ascending: false }).order('created_at', { ascending: false }),
         supabase.from('obras').select('id, codigo, nombre, activa').eq('activa', true).order('codigo'),
         supabase.from('rubros').select('id, nombre, tipo, activo').eq('activo', true).order('nombre'),
-        supabase.from('presupuestos').select('id, obra_id, rubro_id, periodo, monto'),
-        supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado'),
+        traerTodo(() => supabase.from('presupuestos').select('id, obra_id, rubro_id, periodo, monto').order('id')),
+        traerTodo(() => supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado').order('id')),
         supabase.from('gasto_proyectado_fecha_estimada').select('obra_id, rubro_id, periodo, fecha_estimada, cerrado'),
         supabase.from('venta_proyectada_fecha_estimada').select('obra_id, periodo, fecha_estimada, cerrado, concepto'),
       ])

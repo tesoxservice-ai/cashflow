@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
+import { traerTodo } from '../lib/traerTodo'
 import { useAuth } from '../context/AuthContext'
 import SidebarFinanzas, { CLASE_SIDEBAR } from './finanzas/components/SidebarFinanzas'
 import { CARD, ico, CardResumen as CardPremium, CLS_LABEL, CLS_CAMPO, EstadoVacioPremium, CargandoPremium } from './directorio/utilsDirectorio'
@@ -156,13 +157,16 @@ export default function MargenPorObra() {
 
   const cargarDatos = useCallback(async () => {
     setCargando(true); setError('')
-    let qVentas = supabase.from('ventas_proyectadas').select('obra_id, periodo, monto')
-    let qPres   = supabase.from('presupuestos').select('obra_id, periodo, monto')
-    if (!modoTodos) { qVentas = qVentas.eq('periodo', periodo); qPres = qPres.eq('periodo', periodo) }
-    if (obraId)     { qVentas = qVentas.eq('obra_id', obraId); qPres = qPres.eq('obra_id', obraId) }
+    // Se piden por páginas: una consulta sola corta en 1000 filas y el margen salía con presupuestos de menos.
+    const armar = tabla => () => {
+      let q = supabase.from(tabla).select('id, obra_id, periodo, monto').order('id')
+      if (!modoTodos) q = q.eq('periodo', periodo)
+      if (obraId)     q = q.eq('obra_id', obraId)
+      return q
+    }
 
     const [{ data: dataVentas, error: errVentas }, { data: dataPres, error: errPres }] =
-      await Promise.all([qVentas, qPres])
+      await Promise.all([traerTodo(armar('ventas_proyectadas')), traerTodo(armar('presupuestos'))])
 
     if (errVentas || errPres) { setError('No se pudo cargar el margen. Intentá de nuevo.'); setCargando(false); return }
     setVentas(dataVentas ?? []); setPresupuestos(dataPres ?? []); setCargando(false)

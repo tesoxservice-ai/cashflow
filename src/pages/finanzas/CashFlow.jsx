@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
+import { traerTodo } from '../../lib/traerTodo'
 import { useAuth } from '../../context/AuthContext'
 import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
 import FormularioMovimiento from './components/FormularioMovimiento'
@@ -314,16 +315,18 @@ export default function CashFlow() {
       .eq('activo', true)
       .order('nombre')
       .then(({ data }) => setRubros(data ?? []))
-    supabase
+    traerTodo(() => supabase
       .from('presupuestos')
       .select('id, obra_id, rubro_id, periodo, monto')
+      .order('id'))
       .then(({ data }) => setPresupuestos(data ?? []))
   }, [])
 
   const cargarVentasProyectadas = useCallback(async () => {
-    const { data } = await supabase
+    const { data } = await traerTodo(() => supabase
       .from('ventas_proyectadas')
       .select('id, obra_id, periodo, monto, registrado')
+      .order('id'))
     setVentasProyectadas(data ?? [])
   }, [])
 
@@ -384,7 +387,7 @@ export default function CashFlow() {
     const { silencioso = false } = opts
     if (silencioso) setActualizando(true); else setCargando(true)
     setError('')
-    const { data: movData, error: movErr } = await supabase
+    const { data: movData, error: movErr } = await traerTodo(() => supabase
       .from('movimientos')
       .select(`
         id, tipo, categoria, proveedor_cliente, numero_factura,
@@ -397,7 +400,7 @@ export default function CashFlow() {
       `)
       .order('fecha_pago', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true })
-      .order('id',         { ascending: true })
+      .order('id',         { ascending: true }))
 
     if (movErr) { setError('No se pudieron cargar los movimientos.'); setCargando(false); setActualizando(false); return }
 

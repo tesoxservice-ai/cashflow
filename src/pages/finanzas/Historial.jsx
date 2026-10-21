@@ -122,7 +122,7 @@ export default function Historial() {
     Promise.all([
       supabase.from('usuarios').select('id, nombre, apellido, rol'),
       supabase.from('historial').select('usuario_id, usuario_nombre, usuario_rol')
-        .order('creado_en', { ascending: false }).limit(3000),
+        .order('creado_en', { ascending: false }).limit(1000), // 1000 es el máximo que devuelve Supabase por consulta
     ]).then(([{ data: tabla }, { data: hist }]) => {
       const mapa = new Map()
       ;(tabla ?? []).forEach(u => mapa.set(u.id, {
