@@ -15,11 +15,18 @@ import PresupuestoVsReal            from './pages/finanzas/PresupuestoVsReal'
 import VentasProyectadasFin         from './pages/finanzas/VentasProyectadas'
 import Fima                         from './pages/finanzas/Fima'
 import Historial                    from './pages/finanzas/Historial'
+import ImportarFacturas             from './pages/finanzas/ImportarFacturas'
 import MargenPorObra                from './pages/MargenPorObra'
 import DashboardDirectorio          from './pages/directorio/Dashboard'
 import ProtectedRoute               from './components/ProtectedRoute'
 import { useAuth }                  from './context/AuthContext'
-import { puedeEditarPresupuestosEnFinanzas } from './lib/permisos'
+import { puedeEditarPresupuestosEnFinanzas, puedeImportarFacturas } from './lib/permisos'
+
+// Importar facturas: solo Santiago.
+function SoloImportadorFacturas({ children }) {
+  const { user } = useAuth()
+  return puedeImportarFacturas(user) ? children : <Navigate to="/finanzas" replace />
+}
 
 // Presupuestos dentro de Finanzas: solo quien tiene el permiso puntual (Santiago). El resto vuelve al inicio.
 function SoloEditorPresupuestos({ children }) {
@@ -68,6 +75,9 @@ export default function App() {
       } />
       <Route path="/finanzas/presupuestos" element={
         <ProtectedRoute rolRequerido="finanzas"><SoloEditorPresupuestos><Presupuestos /></SoloEditorPresupuestos></ProtectedRoute>
+      } />
+      <Route path="/finanzas/importar-facturas" element={
+        <ProtectedRoute rolRequerido="finanzas"><SoloImportadorFacturas><ImportarFacturas /></SoloImportadorFacturas></ProtectedRoute>
       } />
       <Route path="/finanzas/ventas" element={
         <ProtectedRoute rolRequerido="finanzas"><VentasProyectadasFin /></ProtectedRoute>

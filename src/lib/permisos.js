@@ -10,3 +10,7 @@ export const EMAIL_EDITOR_PRESUPUESTOS_FINANZAS = 'sverdinelli@psdata.com.ar'
 
 export const puedeEditarPresupuestosEnFinanzas = user =>
   (user?.email ?? '').trim().toLowerCase() === EMAIL_EDITOR_PRESUPUESTOS_FINANZAS
+
+// Importar facturas pegadas desde el Excel: también exclusivo de Santiago Verdinelli.
+// (La herramienta guarda por la misma vía que "Nuevo movimiento"; esto decide quién la ve y la puede abrir.)
+export const puedeImportarFacturas = user => puedeEditarPresupuestosEnFinanzas(user)
