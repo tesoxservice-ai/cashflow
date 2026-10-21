@@ -64,6 +64,15 @@ const DIVIDIR_EN_MIERCOLES = new Set([
   '70be9f6d-fc01-423a-a978-24ec9f8cbe27|9a94f4be-7ea9-49a3-ad21-823e72dedaab|2026-10-01',
 ])
 
+// Ventas proyectadas (obra + período) que se cobran en varias fechas en vez de una sola. El saldo sin facturar se
+// divide en partes iguales, una por fecha; `null` = la fecha que le corresponde a la venta (la que Finanzas
+// puso con "Editar fecha", o fin de período). Es una decisión puntual de Finanzas, no una regla general.
+//   - Obra 678 (Proyecto 2000 Cámaras - Santa Fe) · octubre 2026 (cobro a 60 días): 24/11, 22/12 y la fecha original (11/1/2027)
+// Si Finanzas cierra la proyección, desaparecen todas las partes. La descripción es la misma en las 3.
+const DIVIDIR_VENTA_EN_FECHAS = {
+  '70be9f6d-fc01-423a-a978-24ec9f8cbe27|2026-10-01': ['2026-11-24', '2026-12-22', null],
+}
+
 // Divide un monto en `n` partes iguales al centavo; la última absorbe el resto para que la suma sea exacta.
 function dividirEnPartes(monto, n) {
   const centavos = Math.round(monto * 100)
@@ -288,6 +297,16 @@ export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechas
     // si Finanzas pisó la fecha a mano con "Editar fecha" (fechaEstimadaPorClave),
     // es porque sabe cuándo se va a cobrar de verdad -- esa fecha manda, aunque
     // el período original ya haya pasado.
+    const fechasDivididas = DIVIDIR_VENTA_EN_FECHAS[k]
+    if (fechasDivididas) {
+      const montos = dividirEnPartes(saldoProyectado, fechasDivididas.length)
+      fechasDivididas.forEach((f, i) => {
+        const fechaParte = f ?? fechaPago
+        resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado: montos[i], fechaPago: fechaParte, concepto,
+          afectaCashflow: fechaParte >= desde, parte: i + 1, partes: fechasDivididas.length })
+      })
+      return
+    }
     const afectaCashflow = fechaPago >= desde
     resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado, fechaPago, concepto, afectaCashflow })
   })
@@ -341,7 +360,7 @@ export function construirFilaVirtualVenta(proyectada, obras) {
   const obra = obras.find(o => o.id === proyectada.obra_id)
   const key = `${proyectada.obra_id}|${proyectada.periodo}`
   return {
-    id: `virtual-venta-${key}`,
+    id: proyectada.parte ? `virtual-venta-${key}|parte-${proyectada.parte}` : `virtual-venta-${key}`,
     _virtual: true,
     _presupuestado: proyectada.presupuestado,
     _gastoReal: proyectada.ventaReal,
