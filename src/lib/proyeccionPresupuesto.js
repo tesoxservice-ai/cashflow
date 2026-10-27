@@ -31,7 +31,8 @@
 // cantidad de filas. Las facturas se siguen descontando igual que antes.
 //
 // Excepción (DIVIDIR_EN_MIERCOLES): una línea muy grande y poco real se reparte en partes iguales
-// entre los 4 miércoles, en vez de caer entera en uno solo.
+// entre los 4 miércoles de pago (y, si se indica, además el primer miércoles del mes siguiente), en vez de caer
+// entera en uno solo.
 
 export function ultimoDiaPeriodo(periodo) {
   const [anio, mes] = periodo.split('-').map(Number)
@@ -58,19 +59,31 @@ const pagaA30Dias = periodo => periodo >= PAGO_A_30_DIAS_DESDE
 
 // Líneas (obra + rubro + período) que NO caen enteras en un miércoles: su saldo sin facturar se divide
 // en partes iguales entre los 4 miércoles de pago. Es una decisión puntual de Finanzas, no una regla general.
-//   - Obra 678 (Proyecto 2000 Cámaras - Santa Fe) · Subcontratos · octubre 2026 ($ 241.412.500)
+//   - Obra 678 (Proyecto 2000 Cámaras - Santa Fe) · Subcontratos · octubre 2026 ($ 241.412.500, "A DEFINIR"):
+//     5 partes iguales = los 4 miércoles de noviembre + el primer miércoles de diciembre (2/12/2026).
 // Si Finanzas le pone una fecha a mano ("Editar fecha") o la cierra, esa decisión manda y no se divide.
-const DIVIDIR_EN_MIERCOLES = new Set([
-  '70be9f6d-fc01-423a-a978-24ec9f8cbe27|9a94f4be-7ea9-49a3-ad21-823e72dedaab|2026-10-01',
+// El valor es la cantidad de miércoles extra del mes siguiente al de pago.
+const DIVIDIR_EN_MIERCOLES = new Map([
+  ['70be9f6d-fc01-423a-a978-24ec9f8cbe27|9a94f4be-7ea9-49a3-ad21-823e72dedaab|2026-10-01', 1],
 ])
+
+// Mes siguiente a un período "AAAA-MM-01" (para sumar el primer miércoles del mes que sigue al de pago).
+function periodoSiguiente(periodo) {
+  const [anio, mes] = periodo.split('-').map(Number)
+  const d = new Date(anio, mes, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
 
 // Ventas proyectadas (obra + período) que se cobran en varias fechas en vez de una sola. El saldo sin facturar se
 // divide en partes iguales, una por fecha; `null` = la fecha que le corresponde a la venta (la que Finanzas
 // puso con "Editar fecha", o fin de período). Es una decisión puntual de Finanzas, no una regla general.
-//   - Obra 678 (Proyecto 2000 Cámaras - Santa Fe) · octubre 2026 (cobro a 60 días): 24/11, 22/12 y la fecha original (11/1/2027)
+//   - Obra 678 (Proyecto 2000 Cámaras - Santa Fe) · octubre 2026 (cobro a 60 días): 21/12/2026 y 18/1/2027 (las dos
+//     primeras partes) y la fecha manual (16/11/2026). Reordenado el 27/10/2026 junto con todos los cobros de NEC:
+//     pagos de ~$ 280M cada 14 días, como muestra el banco, sin adelantar nunca una fecha respecto de la original.
+//     Antes eran 24/11, 22/12 y 10/11 (ver sql/revertir_reorden_nec_20261027.sql).
 // Si Finanzas cierra la proyección, desaparecen todas las partes. La descripción es la misma en las 3.
 const DIVIDIR_VENTA_EN_FECHAS = {
-  '70be9f6d-fc01-423a-a978-24ec9f8cbe27|2026-10-01': ['2026-11-24', '2026-12-22', null],
+  '70be9f6d-fc01-423a-a978-24ec9f8cbe27|2026-10-01': ['2026-12-21', '2027-01-18', null],
 }
 
 // Divide un monto en `n` partes iguales al centavo; la última absorbe el resto para que la suma sea exacta.
@@ -178,7 +191,11 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
     const [obra_id, rubro_id, periodo] = k.split('|')
     let fechaPago = fechaEstimadaPorClave[k] // si Finanzas puso una fecha, esa manda
     if (!fechaPago && DIVIDIR_EN_MIERCOLES.has(k) && pagaA30Dias(periodo)) {
-      const fechas = primerosMiercolesDelMesSiguiente(periodo, CANTIDAD_MIERCOLES_DE_PAGO)
+      const extra = DIVIDIR_EN_MIERCOLES.get(k) ?? 0
+      const fechas = [
+        ...primerosMiercolesDelMesSiguiente(periodo, CANTIDAD_MIERCOLES_DE_PAGO),
+        ...(extra > 0 ? primerosMiercolesDelMesSiguiente(periodoSiguiente(periodo), extra) : []),
+      ]
       const montos = dividirEnPartes(saldoProyectado, fechas.length)
       fechas.forEach((f, i) => {
         // Igual que el resto: una parte nunca queda en el pasado (se corre al próximo miércoles).
