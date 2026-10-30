@@ -1009,7 +1009,7 @@ function TabCashFlow() {
   }
   const extremosEsc = extremosDe(vistaEsc)
   const extremosReal = extremosDe(resultados?.actual)
-  const opcionesM = base ? opcionesMetrica(base) : []
+  const opcionesM = base ? opcionesMetrica(base, { simplificadas: true }) : []
   const metrica = opcionesM.some(o => o.id === metricaSel) ? metricaSel : 'banco'
 
   const totales = useMemo(() => {
@@ -1054,7 +1054,7 @@ function TabCashFlow() {
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                {hayEscenarios && (
+                {opcionesM.length > 0 && (
                   <div className="inline-flex max-w-full flex-wrap rounded-xl border border-slate-200 bg-slate-50/70 p-0.5 text-[11px] sm:text-xs font-semibold">
                     {opcionesM.map(({ id: v, texto }) => (
                       <button key={v} onClick={() => setMetrica(v)}

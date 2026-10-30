@@ -230,7 +230,16 @@ export function simular(base, escenario) {
 
 // Qué se puede graficar: la caja, cada fondo por separado y la posición total.
 // Los fondos NUNCA se suman entre sí salvo en la posición total.
-export function opcionesMetrica(base) {
+// Con `simplificadas` (panel del Directorio) son 3 opciones: la caja sola, la caja con FIMA Premium y el total.
+export function opcionesMetrica(base, { simplificadas = false } = {}) {
+  if (simplificadas) {
+    const premium = base.fondosLista.find(f => /premium/i.test(f.nombre ?? ''))
+    return [
+      { id: 'banco', texto: 'Caja', titulo: 'Caja (bancos)' },
+      ...(premium ? [{ id: `bf:${claveFondo(premium)}`, texto: 'Caja + FIMA Premium', titulo: `Caja + ${premium.nombre}` }] : []),
+      { id: 'total', texto: 'Total', titulo: 'Posición total (caja + fondos)' },
+    ]
+  }
   return [
     { id: 'banco', texto: 'Caja', titulo: 'Caja (bancos)' },
     ...base.fondosLista.map(f => ({ id: `f:${claveFondo(f)}`, texto: f.nombre, titulo: f.nombre })),
@@ -242,6 +251,10 @@ export function opcionesMetrica(base) {
 export function serieMetrica(resultado, metrica) {
   if (metrica === 'banco') return resultado.banco
   if (metrica === 'total') return resultado.total
+  if (metrica.startsWith('bf:')) { // caja + un fondo
+    const fondo = resultado.fondos[metrica.slice(3)]
+    return fondo ? resultado.banco.map((v, i) => v + fondo[i]) : resultado.banco
+  }
   return resultado.fondos[metrica.slice(2)] ?? resultado.banco
 }
 
