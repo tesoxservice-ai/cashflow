@@ -26,9 +26,11 @@
 // Pago a 30 días (solo gasto proyectado): Operaciones estima cuánto gasta en el
 // mes pero no cuándo, y casi todo se paga a 30 días y en miércoles. Para todos los
 // períodos desde PAGO_A_30_DIAS_DESDE, cada fila gris NO se divide: se reubica
-// entera en uno de los primeros 4 miércoles del mes siguiente. El reparto es
-// "al azar" pero estable (no cambia al recargar ni entre usuarios) y parejo en
-// cantidad de filas. Las facturas se siguen descontando igual que antes.
+// entera en uno de los primeros 4 miércoles del mes siguiente. El reparto busca que
+// los 4 miércoles queden con un monto parecido en total (cada línea, de la más grande
+// a la más chica, va al miércoles que lleva menos plata, contando también los pagos
+// reales que ya están cargados ese día), y es determinístico: no cambia al recargar ni
+// entre usuarios. Las facturas se siguen descontando igual que antes.
 //
 // Excepción (DIVIDIR_EN_MIERCOLES): una línea muy grande y poco real se reparte en partes iguales
 // entre los 4 miércoles de pago (y, si se indica, además el primer miércoles del mes siguiente), en vez de caer
@@ -122,13 +124,25 @@ function hashEstable(texto) {
   return h >>> 0
 }
 
-// Reparte las líneas (obra|rubro|período) entre los miércoles: se ordenan "al azar" (por hash,
-// siempre igual) y se van asignando de a una, así cada miércoles recibe la misma cantidad de filas (±1).
-function repartirEnMiercoles(claves, periodo) {
+// Reparte las líneas (obra|rubro|período) entre los miércoles de pago para que cada miércoles
+// quede con un monto parecido: se van asignando de la más grande a la más chica, cada una al
+// miércoles que lleva menos plata. Las líneas no se dividen (cada una cae entera en un día).
+// `lineas` = [{ clave, peso }] (el peso es el monto presupuestado, no el saldo, para que la fecha de
+// una línea no cambie cuando entra una factura). `precarga` = { 'AAAA-MM-DD': monto } con lo que ya
+// tiene fijo cada miércoles (líneas divididas o con fecha puesta por Finanzas). Es determinístico:
+// el mismo presupuesto da siempre el mismo reparto, al recargar y entre usuarios.
+function repartirEnMiercoles(lineas, periodo, precarga = {}) {
   const miercoles = primerosMiercolesDelMesSiguiente(periodo, CANTIDAD_MIERCOLES_DE_PAGO)
-  const ordenadas = [...claves].sort((a, b) => hashEstable(a) - hashEstable(b) || a.localeCompare(b))
+  const carga = miercoles.map(f => precarga[f] ?? 0)
+  const ordenadas = [...lineas].sort((a, b) =>
+    b.peso - a.peso || hashEstable(a.clave) - hashEstable(b.clave) || a.clave.localeCompare(b.clave))
   const mapa = {}
-  ordenadas.forEach((k, i) => { mapa[k] = miercoles[i % miercoles.length] })
+  ordenadas.forEach(l => {
+    let menor = 0
+    carga.forEach((c, i) => { if (c < carga[menor]) menor = i })
+    mapa[l.clave] = miercoles[menor]
+    carga[menor] += l.peso
+  })
   return mapa
 }
 
@@ -172,12 +186,39 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
   })
 
   // Pago a 30 días: el miércoles de cada línea se define sobre TODAS las líneas presupuestadas del
-  // período (no solo las que siguen pendientes), así no cambia cuando entra una factura.
-  const clavesPorPeriodo = {}
-  Object.keys(presPorClave).forEach(k => { (clavesPorPeriodo[k.split('|')[2]] ??= []).push(k) })
+  // período (no solo las que siguen pendientes) y según su monto presupuestado. Se busca que cada
+  // miércoles termine con un monto parecido CONTANDO lo que ya está fijo ese día: los pagos reales ya
+  // cargados (facturas, sueldos, impuestos...), las líneas con fecha puesta por Finanzas y las divididas en
+  // partes. Esas no se mueven, pero lo proyectado se acomoda alrededor: un miércoles que ya tiene
+  // $ 130 M de facturas recibe menos gasto proyectado que uno vacío. (Si se carga una factura con fecha en
+  // un miércoles de pago, lo proyectado puede acomodarse distinto; es lo que se busca.)
+  const cargaFija = {}
+  const sumarFija = (fecha, monto) => { cargaFija[fecha] = (cargaFija[fecha] ?? 0) + monto }
+  movimientos.forEach(m => {
+    if (m.tipo !== 'egreso' || m.categoria === 'fima' || m.estado_proyeccion === 'no_cumple' || !m.fecha_pago) return
+    sumarFija(m.fecha_pago, Number(m.estado === 'ejecutado' ? (m.monto_neto ?? m.monto_bruto) : m.monto_bruto) || 0)
+  })
+  const lineasPorPeriodo = {}
+  Object.entries(presPorClave).forEach(([k, presupuestado]) => {
+    if (cerradoPorClave[k]) return // no genera ningún pago
+    const periodo = k.split('|')[2]
+    if (!pagaA30Dias(periodo)) return
+    if (fechaEstimadaPorClave[k]) {
+      sumarFija(fechaEstimadaPorClave[k], presupuestado)
+    } else if (DIVIDIR_EN_MIERCOLES.has(k)) {
+      const extra = DIVIDIR_EN_MIERCOLES.get(k) ?? 0
+      const fechas = [
+        ...primerosMiercolesDelMesSiguiente(periodo, CANTIDAD_MIERCOLES_DE_PAGO),
+        ...(extra > 0 ? primerosMiercolesDelMesSiguiente(periodoSiguiente(periodo), extra) : []),
+      ]
+      fechas.forEach(f => sumarFija(f, presupuestado / fechas.length))
+    } else {
+      ;(lineasPorPeriodo[periodo] ??= []).push({ clave: k, peso: presupuestado })
+    }
+  })
   const miercolesPorClave = {}
-  Object.entries(clavesPorPeriodo).forEach(([periodo, claves]) => {
-    if (pagaA30Dias(periodo)) Object.assign(miercolesPorClave, repartirEnMiercoles(claves, periodo))
+  Object.entries(lineasPorPeriodo).forEach(([periodo, lineas]) => {
+    Object.assign(miercolesPorClave, repartirEnMiercoles(lineas, periodo, cargaFija))
   })
   const hoyISO = isoLocalDe(hoy)
   const proximoMiercoles = proximoMiercolesDespuesDe(hoy)
