@@ -20,6 +20,7 @@ const RUBROS_VENTA = {
 const CAMPOS_RUBRO = { rubro_id: { label: 'Rubro', tipo: 'rubro' } }
 const CAMPO_PERIODO = { label: 'Período', tipo: 'periodo' }
 const CAMPO_MONTO = { label: 'Importe', tipo: 'monto' }
+const CAMPO_PARTES = { label: 'División en partes', tipo: 'partes' }
 
 // Cómo se llama y se lee cada tabla auditada.
 //   campos:   etiqueta y tipo de cada columna que vale la pena mostrar
@@ -59,13 +60,13 @@ export const TABLAS = {
   },
   gasto_proyectado_fecha_estimada: {
     modulo: 'Proyección de gastos', singular: 'proyección de gasto', plural: 'proyecciones de gasto', articulo: 'la',
-    campos: { ...CAMPOS_RUBRO, periodo: CAMPO_PERIODO, fecha_estimada: { label: 'Fecha estimada', tipo: 'fecha' }, cerrado: { label: 'Cerrada', tipo: 'bool' } },
+    campos: { ...CAMPOS_RUBRO, periodo: CAMPO_PERIODO, fecha_estimada: { label: 'Fecha estimada', tipo: 'fecha' }, partes: CAMPO_PARTES, cerrado: { label: 'Cerrada', tipo: 'bool' } },
     contexto: ['rubro_id', 'periodo'],
     verbo: (e, ref) => verboProyeccion(e, ref),
   },
   venta_proyectada_fecha_estimada: {
     modulo: 'Proyección de ventas', singular: 'proyección de venta', plural: 'proyecciones de venta', articulo: 'la',
-    campos: { concepto: { label: 'Concepto' }, periodo: CAMPO_PERIODO, fecha_estimada: { label: 'Fecha estimada', tipo: 'fecha' }, cerrado: { label: 'Cerrada', tipo: 'bool' } },
+    campos: { concepto: { label: 'Concepto' }, periodo: CAMPO_PERIODO, fecha_estimada: { label: 'Fecha estimada', tipo: 'fecha' }, partes: CAMPO_PARTES, cerrado: { label: 'Cerrada', tipo: 'bool' } },
     contexto: ['concepto', 'periodo'],
     verbo: (e, ref) => verboProyeccion(e, ref),
   },
@@ -74,9 +75,10 @@ export const TABLAS = {
 // Cerrar / reabrir / reprogramar una proyección.
 function verboProyeccion(e, ref) {
   const objeto = 'la proyección'
-  if (e.accion === 'crear') return { verbo: ref.cerrado ? 'cerró' : 'reprogramó', objeto }
+  if (e.accion === 'crear') return { verbo: ref.cerrado ? 'cerró' : (ref.partes ? 'dividió en partes' : 'reprogramó'), objeto }
   if (e.accion === 'eliminar') return { verbo: 'quitó el ajuste de', objeto }
   if (e.campos.includes('cerrado')) return { verbo: ref.cerrado ? 'cerró' : 'reabrió', objeto }
+  if (e.campos.includes('partes')) return { verbo: ref.partes ? 'dividió en partes' : 'quitó la división de', objeto }
   if (e.campos.includes('fecha_estimada')) return { verbo: 'reprogramó', objeto }
   return null
 }
@@ -144,6 +146,7 @@ function formatear(campo, valor, fila) {
     case 'fecha': return fmtFecha(valor)
     case 'bool': return valor ? 'Sí' : 'No'
     case 'rubroVenta': return RUBROS_VENTA[valor] ?? String(valor)
+    case 'partes': return Array.isArray(valor) ? valor.map(p => `${p.porcentaje}% el ${fmtFecha(p.fecha)}`).join(' · ') : String(valor)
     default: return typeof valor === 'object' ? JSON.stringify(valor) : String(valor)
   }
 }

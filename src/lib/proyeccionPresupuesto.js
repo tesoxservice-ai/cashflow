@@ -35,6 +35,12 @@
 // Excepción (DIVIDIR_EN_MIERCOLES): una línea muy grande y poco real se reparte en partes iguales
 // entre los 4 miércoles de pago (y, si se indica, además el primer miércoles del mes siguiente), en vez de caer
 // entera en uno solo.
+//
+// División manual (gasto y venta proyectados): Finanzas puede partir una línea en varias partes, cada una con su
+// porcentaje y su fecha (columna `partes`, ver normalizarPartes). El saldo que se reparte es el que queda DESPUÉS
+// de descontar las facturas (o ventas reales): si llega una factura, todas las partes bajan en proporción, y si la
+// línea se factura entera desaparecen todas. Una división manual manda sobre la fecha única y sobre las divisiones
+// fijas de este archivo; "cerrar proyección" manda sobre todo.
 
 export function ultimoDiaPeriodo(periodo) {
   const [anio, mes] = periodo.split('-').map(Number)
@@ -93,6 +99,30 @@ function dividirEnPartes(monto, n) {
   const centavos = Math.round(monto * 100)
   const base = Math.floor(centavos / n)
   return Array.from({ length: n }, (_, i) => (i === n - 1 ? centavos - base * (n - 1) : base) / 100)
+}
+
+// División manual (la que Finanzas arma en el Cash Flow con "Editar fecha → Dividir en partes"): una lista
+// [{ porcentaje, fecha }] guardada en la columna `partes` de gasto_proyectado_fecha_estimada /
+// venta_proyectada_fecha_estimada. Los porcentajes suman 100 y cada parte tiene su fecha. Si la lista está mal
+// formada (menos de 2 partes, fecha inválida, porcentaje <= 0 o que no suma 100) se ignora, así un dato roto
+// nunca hace desaparecer plata de la proyección.
+export function normalizarPartes(partes) {
+  if (!Array.isArray(partes) || partes.length < 2) return null
+  const lista = partes.map(p => ({ porcentaje: Number(p?.porcentaje), fecha: String(p?.fecha ?? '').slice(0, 10) }))
+  if (lista.some(p => !(p.porcentaje > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(p.fecha))) return null
+  if (Math.abs(lista.reduce((s, p) => s + p.porcentaje, 0) - 100) > 0.005) return null
+  return lista
+}
+
+// Reparte `monto` según los porcentajes, al centavo; la última parte absorbe el resto para que la suma sea exacta.
+export function dividirPorPorcentajes(monto, partes) {
+  const total = Math.round(monto * 100)
+  let acumulado = 0
+  return partes.map((p, i) => {
+    const c = i === partes.length - 1 ? total - acumulado : Math.round(total * p.porcentaje / 100)
+    acumulado += c
+    return c / 100
+  })
 }
 
 function isoLocalDe(d) {
@@ -179,10 +209,13 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
 
   const fechaEstimadaPorClave = {}
   const cerradoPorClave = {}
+  const partesPorClave = {}
   ;(fechasEstimadas ?? []).forEach(f => {
     const k = `${f.obra_id}|${f.rubro_id}|${f.periodo}`
     fechaEstimadaPorClave[k] = f.fecha_estimada
     cerradoPorClave[k] = f.cerrado
+    const partes = normalizarPartes(f.partes)
+    if (partes) partesPorClave[k] = partes
   })
 
   // Pago a 30 días: el miércoles de cada línea se define sobre TODAS las líneas presupuestadas del
@@ -203,7 +236,9 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
     if (cerradoPorClave[k]) return // no genera ningún pago
     const periodo = k.split('|')[2]
     if (!pagaA30Dias(periodo)) return
-    if (fechaEstimadaPorClave[k]) {
+    if (partesPorClave[k]) {
+      partesPorClave[k].forEach(p => sumarFija(p.fecha, presupuestado * p.porcentaje / 100))
+    } else if (fechaEstimadaPorClave[k]) {
       sumarFija(fechaEstimadaPorClave[k], presupuestado)
     } else if (DIVIDIR_EN_MIERCOLES.has(k)) {
       const extra = DIVIDIR_EN_MIERCOLES.get(k) ?? 0
@@ -230,6 +265,17 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
     const saldoProyectado = Math.max(0, presupuestado - gastoReal)
     if (saldoProyectado <= 0) return
     const [obra_id, rubro_id, periodo] = k.split('|')
+    // División armada por Finanzas: el saldo (ya descontadas las facturas) se reparte por porcentaje, cada
+    // parte en su fecha. Manda sobre la fecha única y sobre la división fija de abajo.
+    if (partesPorClave[k]) {
+      const partes = partesPorClave[k]
+      const montos = dividirPorPorcentajes(saldoProyectado, partes)
+      partes.forEach((p, i) => {
+        resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i],
+          fechaPago: p.fecha, parte: i + 1, partes: partes.length, porcentaje: p.porcentaje, division: partes, divisionManual: true })
+      })
+      return
+    }
     let fechaPago = fechaEstimadaPorClave[k] // si Finanzas puso una fecha, esa manda
     if (!fechaPago && DIVIDIR_EN_MIERCOLES.has(k) && pagaA30Dias(periodo)) {
       const extra = DIVIDIR_EN_MIERCOLES.get(k) ?? 0
@@ -238,11 +284,13 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
         ...(extra > 0 ? primerosMiercolesDelMesSiguiente(periodoSiguiente(periodo), extra) : []),
       ]
       const montos = dividirEnPartes(saldoProyectado, fechas.length)
+      const porcentajes = dividirEnPartes(100, fechas.length)
+      // Igual que el resto: una parte nunca queda en el pasado (se corre al próximo miércoles).
+      const fechasParte = fechas.map(f => (f <= hoyISO ? proximoMiercoles : f))
       fechas.forEach((f, i) => {
-        // Igual que el resto: una parte nunca queda en el pasado (se corre al próximo miércoles).
-        const fechaParte = f <= hoyISO ? proximoMiercoles : f
         resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i],
-          fechaPago: fechaParte, parte: i + 1, partes: fechas.length })
+          fechaPago: fechasParte[i], parte: i + 1, partes: fechas.length, porcentaje: porcentajes[i],
+          division: fechasParte.map((fp, j) => ({ porcentaje: porcentajes[j], fecha: fp })) })
       })
       return
     }
@@ -271,6 +319,11 @@ export function construirFilaVirtual(proyectado, obras, rubros) {
     _presupuestado: proyectado.presupuestado,
     _gastoReal: proyectado.gastoReal,
     _claveFecha: { obra_id: proyectado.obra_id, rubro_id: proyectado.rubro_id, periodo: proyectado.periodo },
+    _division: proyectado.division ?? null,
+    _divisionManual: !!proyectado.divisionManual,
+    _parte: proyectado.parte ?? null,
+    _partes: proyectado.partes ?? null,
+    _porcentaje: proyectado.porcentaje ?? null,
     tipo: 'egreso',
     categoria: 'gasto_proyectado',
     proveedor_cliente: null,
@@ -335,11 +388,14 @@ export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechas
   const fechaEstimadaPorClave = {}
   const cerradoPorClave = {}
   const conceptoPorClave = {}
+  const partesPorClave = {}
   ;(fechasEstimadas ?? []).forEach(f => {
     const k = `${f.obra_id}|${f.periodo}`
     fechaEstimadaPorClave[k] = f.fecha_estimada
     cerradoPorClave[k] = f.cerrado
     conceptoPorClave[k] = f.concepto
+    const partes = normalizarPartes(f.partes)
+    if (partes) partesPorClave[k] = partes
   })
 
   const resultado = []
@@ -355,13 +411,27 @@ export function calcularVentasProyectadas(ventasProyectadas, movimientos, fechas
     // si Finanzas pisó la fecha a mano con "Editar fecha" (fechaEstimadaPorClave),
     // es porque sabe cuándo se va a cobrar de verdad -- esa fecha manda, aunque
     // el período original ya haya pasado.
+    // División armada por Finanzas en el Cash Flow: el saldo (ya descontadas las ventas reales) se reparte por
+    // porcentaje, cada parte en su fecha. Manda sobre la fecha única y sobre la división fija de abajo.
+    const partesManuales = partesPorClave[k]
+    if (partesManuales) {
+      const montos = dividirPorPorcentajes(saldoProyectado, partesManuales)
+      partesManuales.forEach((p, i) => {
+        resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado: montos[i], fechaPago: p.fecha, concepto,
+          afectaCashflow: p.fecha >= desde, parte: i + 1, partes: partesManuales.length, porcentaje: p.porcentaje,
+          division: partesManuales, divisionManual: true })
+      })
+      return
+    }
     const fechasDivididas = DIVIDIR_VENTA_EN_FECHAS[k]
     if (fechasDivididas) {
       const montos = dividirEnPartes(saldoProyectado, fechasDivididas.length)
+      const porcentajes = dividirEnPartes(100, fechasDivididas.length)
+      const fechasParte = fechasDivididas.map(f => f ?? fechaPago)
       fechasDivididas.forEach((f, i) => {
-        const fechaParte = f ?? fechaPago
-        resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado: montos[i], fechaPago: fechaParte, concepto,
-          afectaCashflow: fechaParte >= desde, parte: i + 1, partes: fechasDivididas.length })
+        resultado.push({ obra_id, periodo, presupuestado, ventaReal, saldoProyectado: montos[i], fechaPago: fechasParte[i], concepto,
+          afectaCashflow: fechasParte[i] >= desde, parte: i + 1, partes: fechasDivididas.length, porcentaje: porcentajes[i],
+          division: fechasParte.map((fp, j) => ({ porcentaje: porcentajes[j], fecha: fp })) })
       })
       return
     }
@@ -425,6 +495,11 @@ export function construirFilaVirtualVenta(proyectada, obras) {
     _conceptoManual: proyectada.concepto ?? null,
     _afectaCashflow: proyectada.afectaCashflow !== false,
     _claveFecha: { obra_id: proyectada.obra_id, periodo: proyectada.periodo },
+    _division: proyectada.division ?? null,
+    _divisionManual: !!proyectada.divisionManual,
+    _parte: proyectada.parte ?? null,
+    _partes: proyectada.partes ?? null,
+    _porcentaje: proyectada.porcentaje ?? null,
     tipo: 'ingreso',
     categoria: 'venta_proyectada',
     proveedor_cliente: null,

@@ -46,8 +46,9 @@ export default function useCajaBase() {
         supabase.from('rubros').select('id, nombre, tipo, activo').eq('activo', true).order('nombre'),
         traerTodo(() => supabase.from('presupuestos').select('id, obra_id, rubro_id, periodo, monto').order('id')),
         traerTodo(() => supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado').order('id')),
-        supabase.from('gasto_proyectado_fecha_estimada').select('obra_id, rubro_id, periodo, fecha_estimada, cerrado'),
-        supabase.from('venta_proyectada_fecha_estimada').select('obra_id, periodo, fecha_estimada, cerrado, concepto'),
+        // select('*') para traer también `partes` (la división manual) sin romper si la columna todavía no existe
+        supabase.from('gasto_proyectado_fecha_estimada').select('*'),
+        supabase.from('venta_proyectada_fecha_estimada').select('*'),
       ])
       if (!vivo) return
       if (e1) { setError('No se pudo cargar la caja.'); return }

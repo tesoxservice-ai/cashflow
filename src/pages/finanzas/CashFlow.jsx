@@ -11,7 +11,7 @@ import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
 import FormularioMovimiento from './components/FormularioMovimiento'
 import SeccionDebitos from './components/SeccionDebitos'
 import ModalNotas from './components/ModalNotas'
-import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
+import { combinarConProyeccion, dividirPorPorcentajes } from '../../lib/proyeccionPresupuesto'
 import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium } from '../directorio/utilsDirectorio'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -355,7 +355,7 @@ export default function CashFlow() {
   const cargarFechasEstimadasGasto = useCallback(async () => {
     const { data } = await supabase
       .from('gasto_proyectado_fecha_estimada')
-      .select('obra_id, rubro_id, periodo, fecha_estimada, cerrado')
+      .select('*') // trae también `partes` (la división manual) sin romper si la columna todavía no existe
     setFechasEstimadasGasto(data ?? [])
   }, [])
 
@@ -364,7 +364,7 @@ export default function CashFlow() {
   const cargarFechasEstimadasVenta = useCallback(async () => {
     const { data } = await supabase
       .from('venta_proyectada_fecha_estimada')
-      .select('obra_id, periodo, fecha_estimada, cerrado, concepto')
+      .select('*')
     setFechasEstimadasVenta(data ?? [])
   }, [])
 
@@ -744,15 +744,17 @@ export default function CashFlow() {
     if (!nuevaFechaEstimada) { setErrorFecha('Elegí una fecha.'); return }
 
     setGuardandoFecha(true)
+    // Si la línea estaba dividida a mano, una fecha única la vuelve a juntar (la división manda sobre la fecha).
+    const sinDivision = m._divisionManual ? { partes: null } : {}
     let error
     if (m.categoria === 'venta_proyectada') {
       ;({ error } = await supabase
         .from('venta_proyectada_fecha_estimada')
-        .upsert({ ...m._claveFecha, fecha_estimada: nuevaFechaEstimada, concepto: nuevoConceptoVenta.trim() || null }, { onConflict: 'obra_id,periodo' }))
+        .upsert({ ...m._claveFecha, fecha_estimada: nuevaFechaEstimada, concepto: nuevoConceptoVenta.trim() || null, ...sinDivision }, { onConflict: 'obra_id,periodo' }))
     } else {
       ;({ error } = await supabase
         .from('gasto_proyectado_fecha_estimada')
-        .upsert({ ...m._claveFecha, fecha_estimada: nuevaFechaEstimada }, { onConflict: 'obra_id,rubro_id,periodo' }))
+        .upsert({ ...m._claveFecha, fecha_estimada: nuevaFechaEstimada, ...sinDivision }, { onConflict: 'obra_id,rubro_id,periodo' }))
     }
     setGuardandoFecha(false)
 
@@ -764,6 +766,40 @@ export default function CashFlow() {
     if (m.categoria === 'venta_proyectada') await cargarFechasEstimadasVenta()
     else await cargarFechasEstimadasGasto()
   }
+
+  // Divide una fila gris en partes (porcentaje + fecha cada una). Se guarda aparte, igual que la fecha: no toca
+  // el presupuesto ni la venta de Operaciones, y las facturas siguen descontando (el motor reparte el saldo
+  // que queda, no el importe original). Hace falta la columna `partes` (sql/proyeccion_dividir_en_partes.sql).
+  async function guardarPartes(m, partes) {
+    setErrorFecha('')
+    setGuardandoFecha(true)
+    let error
+    if (m.categoria === 'venta_proyectada') {
+      ;({ error } = await supabase
+        .from('venta_proyectada_fecha_estimada')
+        .upsert({ ...m._claveFecha, fecha_estimada: null, partes, concepto: nuevoConceptoVenta.trim() || null }, { onConflict: 'obra_id,periodo' }))
+    } else {
+      ;({ error } = await supabase
+        .from('gasto_proyectado_fecha_estimada')
+        .upsert({ ...m._claveFecha, fecha_estimada: null, partes }, { onConflict: 'obra_id,rubro_id,periodo' }))
+    }
+    setGuardandoFecha(false)
+
+    if (error) {
+      setErrorFecha(/partes/i.test(error.message ?? '') ? 'Falta correr el script SQL de la división en partes.' : 'No se pudo guardar la división.')
+      return
+    }
+
+    setFilaEditandoFecha(null)
+    setNuevaFechaEstimada('')
+    setNuevoConceptoVenta('')
+    if (m.categoria === 'venta_proyectada') await cargarFechasEstimadasVenta()
+    else await cargarFechasEstimadasGasto()
+  }
+
+  const handleGuardarDivision = (m, partes) => guardarPartes(m, partes)
+  // Quitar la división: la línea vuelve a su fecha por defecto (sin fecha manual ni partes).
+  const handleQuitarDivision = m => guardarPartes(m, null)
 
   // Cierra una proyección "a mano": Finanzas ya revisó que el saldo restante
   // no va a pasar, y no debe seguir apareciendo en el Cash Flow. No borra el
@@ -1014,6 +1050,8 @@ export default function CashFlow() {
               onCambiarFechaEstimada={setNuevaFechaEstimada}
               onCambiarConceptoVenta={setNuevoConceptoVenta}
               onGuardarFecha={handleGuardarFecha}
+              onGuardarDivision={handleGuardarDivision}
+              onQuitarDivision={handleQuitarDivision}
               onCancelarEditarFecha={handleCancelarEditarFecha}
               onCerrarProyeccion={handleCerrarProyeccion}
             />
@@ -1089,7 +1127,7 @@ function TablaCashFlow({
   filaProyeccion, nuevaFechaProyeccion, guardandoProyeccion, errorProyeccion,
   onIniciarProyeccion, onCambiarNuevaFecha, onGuardarProyeccion, onCancelarProyeccion,
   filaEditandoFecha, nuevaFechaEstimada, nuevoConceptoVenta, guardandoFecha, errorFecha,
-  onIniciarEditarFecha, onCambiarFechaEstimada, onCambiarConceptoVenta, onGuardarFecha, onCancelarEditarFecha, onCerrarProyeccion,
+  onIniciarEditarFecha, onCambiarFechaEstimada, onCambiarConceptoVenta, onGuardarFecha, onGuardarDivision, onQuitarDivision, onCancelarEditarFecha, onCerrarProyeccion,
 }) {
   const filasRender = useMemo(() => {
     const resultado   = []
@@ -1196,6 +1234,8 @@ function TablaCashFlow({
                     onChangeFecha={onCambiarFechaEstimada}
                     onChangeConcepto={onCambiarConceptoVenta}
                     onGuardar={() => onGuardarFecha(m)}
+                    onGuardarDivision={partes => onGuardarDivision(m, partes)}
+                    onQuitarDivision={() => onQuitarDivision(m)}
                     onCancelar={onCancelarEditarFecha}
                     onCerrar={() => onCerrarProyeccion(m)}
                   />
@@ -1240,12 +1280,22 @@ function TablaCashFlow({
                         title={`Presupuestado: ${fmtARS(m._presupuestado)} — Ya facturado: ${fmtARS(m._gastoReal)}`}>
                         {m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar
                         <span className="block not-italic text-slate-600 font-medium uppercase">Período {periodoCorto(m.periodo)}</span>
+                        {m._partes > 1 && (
+                          <span className="block not-italic text-cyan-700 font-semibold">
+                            Parte {m._parte} de {m._partes}{m._porcentaje ? ` · ${m._porcentaje}%` : ''}
+                          </span>
+                        )}
                       </span>
                     ) : m.categoria === 'venta_proyectada' ? (
                       <span className="truncate block italic text-slate-500">
                         Venta proyectada de {labelPeriodo(m.periodo)}
                         {m._conceptoManual && (
                           <span className="block not-italic text-slate-600 font-medium">{m._conceptoManual}</span>
+                        )}
+                        {m._partes > 1 && (
+                          <span className="block not-italic text-cyan-700 font-semibold">
+                            Parte {m._parte} de {m._partes}{m._porcentaje ? ` · ${m._porcentaje}%` : ''}
+                          </span>
                         )}
                         {m._gastoReal > 0 && (
                           <span className="block not-italic text-slate-400">
@@ -1292,11 +1342,11 @@ function TablaCashFlow({
                         <button
                           onClick={() => onIniciarEditarFecha(m)}
                           disabled={filaEditandoFecha !== null}
-                          title="Estimado por Operaciones — podés ajustar la fecha"
+                          title="Estimado por Operaciones — podés ajustar la fecha o dividirlo en partes"
                           className="text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                           style={{ color: '#0e7490' }}
                         >
-                          Editar fecha
+                          Editar / dividir
                         </button>
                         <button
                           onClick={() => onCerrarProyeccion(m)}
@@ -1514,11 +1564,174 @@ function FilaProyeccion({ mov, nuevaFecha, guardando, error, onChangeFecha, onGu
   )
 }
 
-function FilaEditarFechaEstimada({ mov, nuevaFecha, nuevoConcepto, guardando, error, onChangeFecha, onChangeConcepto, onGuardar, onCancelar, onCerrar }) {
+function sumarDias(fechaISO, dias) {
+  const d = new Date(`${fechaISO}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return ''
+  d.setDate(d.getDate() + dias)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// n partes iguales (al centavo de porcentaje: la última absorbe el resto), una por semana desde la fecha base.
+function partesIguales(n, fechaBase) {
+  const base = Math.floor(10000 / n)
+  return Array.from({ length: n }, (_, i) => ({
+    porcentaje: String((i === n - 1 ? 10000 - base * (n - 1) : base) / 100),
+    fecha: fechaBase ? sumarDias(fechaBase, 7 * i) : '',
+  }))
+}
+
+const numPct = v => Number(String(v ?? '').replace(',', '.'))
+
+// Editor de una fila gris (gasto o venta proyectada): una sola fecha, o dividirla en partes con su porcentaje y fecha.
+function FilaEditarFechaEstimada(props) {
+  const { mov } = props
+  const yaDividida = Array.isArray(mov._division) && mov._division.length > 1
+  const [modo, setModo] = useState(yaDividida ? 'dividir' : 'una')
+  const selector = (
+    <div className="flex items-center gap-1 mb-3 p-1 rounded-xl bg-slate-100 w-fit">
+      {[['una', 'Una sola fecha'], ['dividir', 'Dividir en partes']].map(([id, label]) => (
+        <button key={id} type="button" onClick={() => setModo(id)}
+          className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors
+            ${modo === id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+  return modo === 'dividir'
+    ? <FilaDividirEnPartes {...props} selector={selector} />
+    : <FilaEditarFechaUnica {...props} selector={selector} />
+}
+
+function FilaDividirEnPartes({ mov, nuevoConcepto, guardando, error, onChangeConcepto, onGuardarDivision, onQuitarDivision, onCancelar, onCerrar, selector }) {
+  const esVenta = mov.categoria === 'venta_proyectada'
+  // Lo que se reparte es lo que todavía falta facturar: si entra una factura, el saldo (y cada parte) baja solo.
+  const saldoLinea = Math.max(0, Number(mov._presupuestado ?? 0) - Number(mov._gastoReal ?? 0))
+  const yaDividida = Array.isArray(mov._division) && mov._division.length > 1
+  const [partes, setPartes] = useState(() => yaDividida
+    ? mov._division.map(p => ({ porcentaje: String(p.porcentaje), fecha: p.fecha }))
+    : partesIguales(2, mov.fecha_pago))
+  const [errorLocal, setErrorLocal] = useState('')
+
+  const cambiar = (i, campo, valor) => setPartes(ps => ps.map((p, j) => (j === i ? { ...p, [campo]: valor } : p)))
+  const quitar = i => setPartes(ps => ps.filter((_, j) => j !== i))
+  const agregar = () => setPartes(ps => [...ps, { porcentaje: '0', fecha: sumarDias(ps[ps.length - 1]?.fecha || mov.fecha_pago || '', 7) }])
+  const iguales = n => setPartes(ps => partesIguales(n, ps[0]?.fecha || mov.fecha_pago))
+
+  const pcts = partes.map(p => numPct(p.porcentaje))
+  const suma = Math.round(pcts.reduce((s, x) => s + (Number.isFinite(x) ? x : 0), 0) * 100) / 100
+  const sumaOk = Math.abs(suma - 100) <= 0.005
+  const valida = partes.length >= 2 && sumaOk && pcts.every(x => x > 0) && partes.every(p => p.fecha)
+  const montos = valida ? dividirPorPorcentajes(saldoLinea, pcts.map(x => ({ porcentaje: x }))) : null
+
+  function guardar() {
+    setErrorLocal('')
+    if (partes.length < 2) { setErrorLocal('Tiene que haber al menos 2 partes.'); return }
+    if (pcts.some(x => !(x > 0))) { setErrorLocal('Cada parte tiene que tener un porcentaje mayor a 0.'); return }
+    if (!sumaOk) { setErrorLocal(`Los porcentajes suman ${suma}%: tienen que dar 100%.`); return }
+    if (partes.some(p => !p.fecha)) { setErrorLocal('Falta la fecha de alguna parte.'); return }
+    onGuardarDivision(partes.map((p, i) => ({ porcentaje: Number(pcts[i].toFixed(2)), fecha: p.fecha })))
+  }
+
+  const inputCls = `px-3 py-2 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
+    transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400`
+
+  return (
+    <tr style={{ backgroundColor: '#f8fafc' }} className="border-b border-slate-200">
+      <td className="px-4 py-3" colSpan={9}>
+        {selector}
+        <p className="text-[11px] font-semibold text-slate-500 mb-0.5">
+          {esVenta ? `Venta proyectada de ${labelPeriodo(mov.periodo)}` : `${mov.rubros?.nombre ?? 'Rubro'} — saldo sin facturar`}
+        </p>
+        <p className="text-xs text-slate-500 mb-3">
+          Saldo a repartir: <span className="font-semibold text-slate-700">{fmtARS(saldoLinea)}</span>
+          <span className="text-slate-400"> (presupuestado {fmtARS(mov._presupuestado ?? 0)} − ya {esVenta ? 'registrado' : 'facturado'} {fmtARS(mov._gastoReal ?? 0)})</span>
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mr-1">Partes iguales</span>
+          {[2, 3, 4, 5].map(n => (
+            <button key={n} type="button" onClick={() => iguales(n)}
+              className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-teal-300 hover:text-teal-700 transition-colors">
+              {n}
+            </button>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {partes.map((p, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-3">
+              <span className="text-xs font-semibold text-slate-500 w-14">Parte {i + 1}</span>
+              <div className="flex items-center gap-1">
+                <input type="number" min="0" max="100" step="0.01" value={p.porcentaje}
+                  onChange={e => cambiar(i, 'porcentaje', e.target.value)} className={`${inputCls} w-24 text-right`} />
+                <span className="text-sm text-slate-400">%</span>
+              </div>
+              <input type="date" value={p.fecha} onChange={e => cambiar(i, 'fecha', e.target.value)} className={inputCls} />
+              <span className="text-sm font-semibold text-slate-600 tabular-nums w-40 text-right">{montos ? fmtARS(montos[i]) : '—'}</span>
+              {partes.length > 2 && (
+                <button type="button" onClick={() => quitar(i)} className="text-xs font-semibold text-slate-400 hover:text-red-600 transition-colors">Quitar</button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4 mt-3">
+          <button type="button" onClick={agregar} className="text-xs font-semibold transition-colors" style={{ color: '#0e7490' }}>+ Agregar parte</button>
+          <span className={`text-xs font-semibold ${sumaOk ? 'text-emerald-600' : 'text-rose-600'}`}>
+            Suma: {suma}% {sumaOk ? '✓' : '— tiene que dar 100%'}
+          </span>
+        </div>
+
+        {esVenta && (
+          <div className="mt-3">
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Concepto (para identificarla en el Cash Flow)</label>
+            <input type="text" placeholder="Ej: Anticipo obra 678, cobro estimado con 60 días" value={nuevoConcepto}
+              onChange={e => onChangeConcepto(e.target.value)} className={`${inputCls} w-64`} />
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 mt-4">
+          <button onClick={onCerrar} disabled={guardando}
+            className="px-3 py-2 text-sm font-semibold text-red-600 hover:text-red-700 transition-colors disabled:opacity-50"
+            title="El saldo restante deja de aparecer en el Cash Flow. No borra el presupuesto/venta original.">
+            Cerrar proyección
+          </button>
+          {mov._divisionManual && (
+            <button onClick={onQuitarDivision} disabled={guardando}
+              className="px-3 py-2 text-sm font-semibold text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-50"
+              title="La línea vuelve a su fecha original, sin dividir.">
+              Quitar división
+            </button>
+          )}
+          <div className="flex items-center gap-2 ml-auto">
+            {(errorLocal || error) && <span className="text-xs text-red-600 font-medium">{errorLocal || error}</span>}
+            <button onClick={onCancelar} disabled={guardando}
+              className="px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-50">
+              Cancelar
+            </button>
+            <button onClick={guardar} disabled={guardando || !valida}
+              className="px-4 py-2 text-sm font-semibold text-white rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ backgroundColor: '#0e7490' }}>
+              {guardando ? 'Guardando…' : 'Guardar división'}
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          Se reparte el saldo que falta facturar, no el importe original: cuando llega una factura, todas las partes bajan en proporción,
+          y si se factura todo desaparecen. No se toca el presupuesto ni la venta que cargó Operaciones.
+        </p>
+      </td>
+    </tr>
+  )
+}
+
+function FilaEditarFechaUnica({ mov, nuevaFecha, nuevoConcepto, guardando, error, onChangeFecha, onChangeConcepto, onGuardar, onCancelar, onCerrar, selector }) {
   const esVenta = mov.categoria === 'venta_proyectada'
   return (
     <tr style={{ backgroundColor: '#f8fafc' }} className="border-b border-slate-200">
       <td className="px-4 py-3" colSpan={9}>
+        {selector}
         <div className="flex flex-wrap items-center gap-4">
           <div>
             <p className="text-[11px] font-semibold text-slate-500 mb-1">

@@ -1,7 +1,7 @@
 // Pruebas del gasto proyectado (reparto en miércoles y descuento por facturas). Correr con: npm test
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calcularGastosProyectados } from './proyeccionPresupuesto.js'
+import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes } from './proyeccionPresupuesto.js'
 
 const HOY = new Date(2026, 9, 30) // 30/10/2026
 const OBRAS = ['o1', 'o2', 'o3', 'o4', 'o5', 'o6', 'o7', 'o8'].map(id => ({ id }))
@@ -159,4 +159,108 @@ test('la obra 678 · Subcontratos de octubre sigue dividida en 5 partes iguales 
   const noviembre = MIERCOLES_NOV.map(d => porFecha(filas)[d] ?? 0)
   const promedio = noviembre.reduce((s, x) => s + x, 0) / 4
   noviembre.forEach(m => assert.ok(Math.abs(m - promedio) <= 12_000_000, `miércoles con ${m} (promedio ${promedio}, total ${total})`))
+})
+
+// ─── División manual en partes (gasto y venta) ───────────────────────────────────────────────────
+
+const LINEA = { obra_id: 'o1', rubro_id: 'r1', periodo: '2026-10-01' }
+const presUna = [{ ...LINEA, monto: 100_000 }]
+const dividida = partes => [{ ...LINEA, fecha_estimada: null, cerrado: false, partes }]
+const suma = filas => filas.reduce((s, f) => s + f.saldoProyectado, 0)
+
+test('gasto: una línea de 100.000 dividida 50 y 50 da dos filas de 50.000 en sus fechas', () => {
+  const filas = calcularGastosProyectados(presUna, [], dividida([{ porcentaje: 50, fecha: '2026-11-18' }, { porcentaje: 50, fecha: '2026-12-02' }]), OBRAS, HOY)
+  assert.deepEqual(filas.map(f => [f.fechaPago, f.saldoProyectado]), [['2026-11-18', 50_000], ['2026-12-02', 50_000]])
+  assert.deepEqual(filas.map(f => [f.parte, f.partes]), [[1, 2], [2, 2]])
+})
+
+test('gasto: 25 / 25 / 25 / 25 y también partes desparejas (70 / 30)', () => {
+  const cuatro = [4, 11, 18, 25].map(d => ({ porcentaje: 25, fecha: `2026-11-${String(d).padStart(2, '0')}` }))
+  const f4 = calcularGastosProyectados(presUna, [], dividida(cuatro), OBRAS, HOY)
+  assert.deepEqual(f4.map(f => f.saldoProyectado), [25_000, 25_000, 25_000, 25_000])
+  const f2 = calcularGastosProyectados(presUna, [], dividida([{ porcentaje: 70, fecha: '2026-11-11' }, { porcentaje: 30, fecha: '2026-11-25' }]), OBRAS, HOY)
+  assert.deepEqual(f2.map(f => f.saldoProyectado), [70_000, 30_000])
+})
+
+test('gasto: una factura sigue descontando y baja todas las partes en proporción', () => {
+  const partes = [{ porcentaje: 50, fecha: '2026-11-18' }, { porcentaje: 50, fecha: '2026-12-02' }]
+  const factura = { categoria: 'factura', tipo: 'egreso', ...LINEA, monto_bruto: 40_000, estado_proyeccion: 'normal' }
+  const filas = calcularGastosProyectados(presUna, [factura], dividida(partes), OBRAS, HOY)
+  assert.deepEqual(filas.map(f => f.saldoProyectado), [30_000, 30_000]) // 100.000 - 40.000 = 60.000 repartido 50 y 50
+  assert.equal(filas[0].gastoReal, 40_000)
+})
+
+test('gasto: el reparto es exacto al centavo con porcentajes que no dividen parejo', () => {
+  const tres = [{ porcentaje: 33.33, fecha: '2026-11-04' }, { porcentaje: 33.33, fecha: '2026-11-11' }, { porcentaje: 33.34, fecha: '2026-11-18' }]
+  const pres = [{ ...LINEA, monto: 1_000_000.01 }]
+  const factura = { categoria: 'factura', tipo: 'egreso', ...LINEA, monto_bruto: 123_456.78, estado_proyeccion: 'normal' }
+  const filas = calcularGastosProyectados(pres, [factura], dividida(tres), OBRAS, HOY)
+  assert.equal(centavos(suma(filas)), centavos(1_000_000.01 - 123_456.78))
+})
+
+test('gasto: si se factura toda la línea desaparecen todas las partes; cerrar la proyección también', () => {
+  const partes = [{ porcentaje: 50, fecha: '2026-11-18' }, { porcentaje: 50, fecha: '2026-12-02' }]
+  const entera = { categoria: 'factura', tipo: 'egreso', ...LINEA, monto_bruto: 100_000, estado_proyeccion: 'normal' }
+  assert.equal(calcularGastosProyectados(presUna, [entera], dividida(partes), OBRAS, HOY).length, 0)
+  assert.equal(calcularGastosProyectados(presUna, [], [{ ...dividida(partes)[0], cerrado: true }], OBRAS, HOY).length, 0)
+})
+
+test('gasto: la división manda sobre una fecha única guardada y sobre la división fija de la 678', () => {
+  const partes = [{ porcentaje: 50, fecha: '2026-11-18' }, { porcentaje: 50, fecha: '2026-12-02' }]
+  const conFecha = [{ ...dividida(partes)[0], fecha_estimada: '2026-12-30' }]
+  assert.deepEqual(calcularGastosProyectados(presUna, [], conFecha, OBRAS, HOY).map(f => f.fechaPago), ['2026-11-18', '2026-12-02'])
+  const o678 = '70be9f6d-fc01-423a-a978-24ec9f8cbe27', r678 = '9a94f4be-7ea9-49a3-ad21-823e72dedaab'
+  const pres678 = [{ obra_id: o678, rubro_id: r678, periodo: '2026-10-01', monto: 200_000 }]
+  const fechas = [{ obra_id: o678, rubro_id: r678, periodo: '2026-10-01', partes: [{ porcentaje: 60, fecha: '2026-11-11' }, { porcentaje: 40, fecha: '2026-11-25' }] }]
+  const filas = calcularGastosProyectados(pres678, [], fechas, [{ id: o678 }], HOY)
+  assert.deepEqual(filas.map(f => [f.fechaPago, f.saldoProyectado]), [['2026-11-11', 120_000], ['2026-11-25', 80_000]])
+})
+
+test('gasto: las partes cuentan como carga fija de su día y el resto se acomoda alrededor', () => {
+  // $ 60 M del rubro dividido caen el 4/11: ese día recibe menos del resto de las líneas
+  const pres = [{ ...LINEA, monto: 120_000_000 }, ...PRES.filter(p => !(p.obra_id === 'o1' && p.rubro_id === 'r1'))]
+  const partes = [{ porcentaje: 50, fecha: '2026-11-04' }, { porcentaje: 50, fecha: '2026-12-16' }]
+  const filas = calcularGastosProyectados(pres, [], dividida(partes), OBRAS, HOY).filter(f => !f.parte)
+  const proy = porFecha(filas)
+  assert.ok((proy['2026-11-04'] ?? 0) < (proy['2026-11-11'] ?? 0), `el 4/11 quedó con ${proy['2026-11-04']} y el 11/11 con ${proy['2026-11-11']}`)
+})
+
+test('una división mal formada se ignora: la línea sigue entera y no se pierde plata', () => {
+  const malas = [
+    [{ porcentaje: 50, fecha: '2026-11-18' }, { porcentaje: 40, fecha: '2026-12-02' }], // suma 90
+    [{ porcentaje: 100, fecha: '2026-11-18' }], // una sola parte
+    [{ porcentaje: 60, fecha: '2026-11-18' }, { porcentaje: 40, fecha: 'mañana' }], // fecha inválida
+    [{ porcentaje: 120, fecha: '2026-11-18' }, { porcentaje: -20, fecha: '2026-12-02' }], // negativo
+    'no es una lista',
+  ]
+  malas.forEach(partes => {
+    assert.equal(normalizarPartes(partes), null)
+    const filas = calcularGastosProyectados(presUna, [], dividida(partes), OBRAS, HOY)
+    assert.equal(filas.length, 1)
+    assert.equal(filas[0].saldoProyectado, 100_000)
+  })
+})
+
+test('venta: la división se reparte por porcentaje, descuenta las ventas reales y cada parte tiene su fecha', () => {
+  const ventas = [{ obra_id: 'o1', periodo: '2026-10-01', monto: 100_000 }]
+  const fechas = [{ obra_id: 'o1', periodo: '2026-10-01', fecha_estimada: null, cerrado: false, concepto: 'Anticipo',
+    partes: [{ porcentaje: 25, fecha: '2026-11-16' }, { porcentaje: 25, fecha: '2026-12-16' }, { porcentaje: 50, fecha: '2027-01-18' }] }]
+  const filas = calcularVentasProyectadas(ventas, [], fechas, OBRAS, HOY)
+  assert.deepEqual(filas.map(f => [f.fechaPago, f.saldoProyectado]), [['2026-11-16', 25_000], ['2026-12-16', 25_000], ['2027-01-18', 50_000]])
+  assert.ok(filas.every(f => f.concepto === 'Anticipo' && f.afectaCashflow))
+  // una venta real de 20.000 baja las tres partes en proporción
+  const real = { categoria: 'ingreso_cliente', tipo: 'ingreso', obra_id: 'o1', periodo: '2026-10-01', monto_bruto: 20_000, estado_proyeccion: 'normal' }
+  const conReal = calcularVentasProyectadas(ventas, [real], fechas, OBRAS, HOY)
+  assert.deepEqual(conReal.map(f => f.saldoProyectado), [20_000, 20_000, 40_000])
+  // si se cobra todo, desaparecen
+  const todo = { ...real, monto_bruto: 100_000 }
+  assert.equal(calcularVentasProyectadas(ventas, [todo], fechas, OBRAS, HOY).length, 0)
+})
+
+test('venta: la división manda sobre la fecha única; una parte vieja no afecta el saldo', () => {
+  const ventas = [{ obra_id: 'o1', periodo: '2026-10-01', monto: 100_000 }]
+  const fechas = [{ obra_id: 'o1', periodo: '2026-10-01', fecha_estimada: '2027-03-01',
+    partes: [{ porcentaje: 50, fecha: '2026-09-15' }, { porcentaje: 50, fecha: '2026-11-16' }] }]
+  const filas = calcularVentasProyectadas(ventas, [], fechas, OBRAS, HOY)
+  assert.deepEqual(filas.map(f => [f.fechaPago, f.afectaCashflow]), [['2026-09-15', false], ['2026-11-16', true]])
 })

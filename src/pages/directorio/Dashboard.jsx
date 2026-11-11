@@ -153,8 +153,8 @@ async function cargarDatosExportDirectorio() {
       .eq('periodo', periodo).eq('categoria', 'factura').eq('tipo', 'egreso'),
     traerTodo(() => supabase.from('presupuestos').select('id,obra_id,rubro_id,periodo,monto').order('id')),
     traerTodo(() => supabase.from('ventas_proyectadas').select('id,obra_id,periodo,monto,registrado').order('id')),
-    supabase.from('gasto_proyectado_fecha_estimada').select('obra_id,rubro_id,periodo,fecha_estimada,cerrado'),
-    supabase.from('venta_proyectada_fecha_estimada').select('obra_id,periodo,fecha_estimada,cerrado,concepto'),
+    supabase.from('gasto_proyectado_fecha_estimada').select('*'),
+    supabase.from('venta_proyectada_fecha_estimada').select('*'),
   ])
 
   const errs = [e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11].filter(Boolean)
@@ -782,9 +782,9 @@ function TabCashFlow() {
       .then(({ data }) => setPresupuestos(data ?? []))
     traerTodo(() => supabase.from('ventas_proyectadas').select('id, obra_id, periodo, monto, registrado').order('id'))
       .then(({ data }) => setVentasProyectadas(data ?? []))
-    supabase.from('gasto_proyectado_fecha_estimada').select('obra_id, rubro_id, periodo, fecha_estimada, cerrado')
+    supabase.from('gasto_proyectado_fecha_estimada').select('*')
       .then(({ data }) => setFechasEstimadasGasto(data ?? []))
-    supabase.from('venta_proyectada_fecha_estimada').select('obra_id, periodo, fecha_estimada, cerrado, concepto')
+    supabase.from('venta_proyectada_fecha_estimada').select('*')
       .then(({ data }) => setFechasEstimadasVenta(data ?? []))
   }, [])
 
