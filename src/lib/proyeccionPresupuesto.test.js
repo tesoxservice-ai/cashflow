@@ -1,7 +1,7 @@
 // Pruebas del gasto proyectado (reparto en miércoles y descuento por facturas). Correr con: npm test
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes, combinarConProyeccion, presupuestosConImpacto, calcularImpuestosDeCobros, TASAS_IMPUESTOS_COBRO } from './proyeccionPresupuesto.js'
+import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes, combinarConProyeccion, presupuestosConImpacto, calcularImpuestosDeCobros, TASAS_IMPUESTOS_COBRO, indexarRegistrado, desgloseDeLinea } from './proyeccionPresupuesto.js'
 
 const HOY = new Date(2026, 9, 30) // 30/10/2026
 const OBRAS = ['o1', 'o2', 'o3', 'o4', 'o5', 'o6', 'o7', 'o8'].map(id => ({ id }))
@@ -445,4 +445,56 @@ test('el editor recibe la división 55 / 45 ya cargada y las filas no se marcan 
   const [mie] = lineaDe(calcularCrudo(), 'o1', 'r1')
   assert.deepEqual(mie.division.map(d => d.porcentaje), [55, 45])
   assert.equal(mie.divisionManual, undefined)
+})
+
+// ─── Detalle de lo registrado contra cada línea gris ─────────────────────────────────────────────
+
+const fac = (id, obra, rubro, periodo, monto, extra = {}) => ({ id, categoria: 'factura', tipo: 'egreso', obra_id: obra, rubro_id: rubro, periodo, monto_bruto: monto, estado_proyeccion: 'normal', estado: 'proyectado', ...extra })
+const desgloseGasto = (movs, linea = { obra_id: 'o1', rubro_id: 'r1', periodo: '2026-10-01' }, pres = []) => desgloseDeLinea(linea, movs, indexarRegistrado(movs), pres, 'gasto')
+
+test('el detalle de un gasto proyectado muestra las facturas que descuentan: misma obra, rubro y período', () => {
+  const movs = [fac('a', 'o1', 'r1', '2026-10-01', 30_000_000), fac('b', 'o1', 'r1', '2026-10-01', 4_000_000), fac('x', 'o1', 'r2', '2026-10-01', 1_000_000)]
+  const d = desgloseGasto(movs)
+  assert.deepEqual(d.cuenta.map(m => m.id), ['a', 'b'])
+  assert.equal(d.total, 34_000_000)
+  // coincide con lo que descuenta el cálculo
+  const pres = [{ obra_id: 'o1', rubro_id: 'r1', periodo: '2026-10-01', monto: 80_000_000 }]
+  const linea = unificar(calcularGastosProyectados(pres, movs, [], OBRAS, HOY))[0]
+  assert.equal(linea.gastoReal, d.total)
+})
+
+test('el detalle no cuenta lo "no se cumple", lo que no es factura ni las facturas sin obra o sin rubro', () => {
+  const movs = [fac('a', 'o1', 'r1', '2026-10-01', 1_000_000), fac('n', 'o1', 'r1', '2026-10-01', 9, { estado_proyeccion: 'no_cumple' }),
+    fac('s', 'o1', 'r1', '2026-10-01', 9, { categoria: 'sueldo' }), fac('i', 'o1', 'r1', '2026-10-01', 9, { tipo: 'ingreso' }),
+    fac('sr', 'o1', null, '2026-10-01', 9), fac('so', null, 'r1', '2026-10-01', 9)]
+  assert.deepEqual(desgloseGasto(movs).cuenta.map(m => m.id), ['a'])
+})
+
+test('el detalle marca lo que NO descuenta pero podría ser de la línea: otro rubro, otro período, otra obra sin presupuesto', () => {
+  const movs = [
+    fac('a', 'o1', 'r1', '2026-10-01', 5_000_000),                 // descuenta
+    fac('rubro', 'o1', 'r2', '2026-10-01', 1_000_000),             // misma obra y período, otro rubro
+    fac('ant', 'o1', 'r1', '2026-09-01', 2_000_000),               // mes anterior
+    fac('sig', 'o1', 'r1', '2026-11-01', 3_000_000),               // mes siguiente
+    fac('lejos', 'o1', 'r1', '2026-05-01', 9_000_000),             // muy lejos: no es candidata
+    fac('obra', 'o2', 'r1', '2026-10-01', 4_000_000),              // otra obra sin presupuesto de ese rubro y período
+    fac('obraConPres', 'o3', 'r1', '2026-10-01', 7_000_000),       // otra obra que tiene su propio presupuesto: no es candidata
+  ]
+  const pres = [{ obra_id: 'o3', rubro_id: 'r1', periodo: '2026-10-01', monto: 10 }]
+  const d = desgloseGasto(movs, undefined, pres)
+  assert.deepEqual(d.cuenta.map(m => m.id), ['a'])
+  assert.deepEqual(d.candidatos.map(c => [c.mov.id, c.motivo]), [['obra', 'otra_obra'], ['sig', 'otro_periodo'], ['ant', 'otro_periodo'], ['rubro', 'otro_rubro']])
+})
+
+test('el detalle de una venta proyectada muestra las ventas registradas de la misma obra y período', () => {
+  const v = (id, obra, periodo, monto, extra = {}) => ({ id, categoria: 'ingreso_cliente', tipo: 'ingreso', obra_id: obra, periodo, monto_bruto: monto, estado_proyeccion: 'normal', ...extra })
+  const movs = [v('a', 'o1', '2026-10-01', 100), v('b', 'o1', '2026-10-01', 50), v('c', 'o1', '2026-11-01', 20), v('d', 'o2', '2026-10-01', 7), v('e', 'o1', '2026-10-01', 9, { estado_proyeccion: 'no_cumple' })]
+  const d = desgloseDeLinea({ obra_id: 'o1', periodo: '2026-10-01' }, movs, indexarRegistrado(movs), [], 'venta')
+  assert.deepEqual(d.cuenta.map(m => m.id), ['a', 'b'])
+  assert.equal(d.total, 150)
+  assert.deepEqual(d.candidatos.map(c => [c.mov.id, c.motivo]), [['c', 'otro_periodo']])
+  // coincide con lo que descuenta la venta proyectada
+  const ventas = [{ obra_id: 'o1', periodo: '2026-10-01', monto: 400 }]
+  const fila = calcularVentasProyectadas(ventas, movs, [], OBRAS, HOY)[0]
+  assert.equal(fila.ventaReal, d.total)
 })

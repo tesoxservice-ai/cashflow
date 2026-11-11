@@ -659,3 +659,53 @@ export function combinarConProyeccion(movimientos, presupuestos, ventasProyectad
     return String(a.id).localeCompare(String(b.id))
   })
 }
+
+// ─── Qué hay registrado contra cada línea gris ───────────────────────────────────────────────────
+
+const mesVecino = (periodo, delta) => {
+  const [a, m] = periodo.split('-').map(Number)
+  const d = new Date(a, m - 1 + delta, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+// Arma, una sola vez, los índices con lo que ya está registrado: las facturas por obra + rubro + período (lo que descuenta el
+// gasto proyectado) y las ventas por obra + período (lo que descuenta la venta proyectada), con las mismas reglas del cálculo.
+export function indexarRegistrado(movimientos) {
+  const facturas = {}
+  const ventas = {}
+  ;(movimientos ?? []).forEach(m => {
+    if (m.estado_proyeccion === 'no_cumple' || !m.obra_id || !m.periodo) return
+    if (m.categoria === 'factura' && m.tipo === 'egreso' && m.rubro_id) (facturas[`${m.obra_id}|${m.rubro_id}|${m.periodo}`] ??= []).push(m)
+    else if (m.categoria === 'ingreso_cliente' && m.tipo === 'ingreso') (ventas[`${m.obra_id}|${m.periodo}`] ??= []).push(m)
+  })
+  return { facturas, ventas }
+}
+
+// Detalle de una línea gris para poder revisarla y corregir lo que esté mal cargado.
+//   cuenta:     lo que hoy descuenta de la línea (mismo cálculo que el Cash Flow).
+//   candidatos: movimientos que NO descuentan pero podrían ser de esta línea, con el motivo:
+//               gasto -> otro rubro (misma obra y período), otro período (mes anterior o siguiente), otra obra sin
+//                        presupuesto de ese rubro y período;
+//               venta -> otro período (mes anterior o siguiente) de la misma obra.
+// linea: { obra_id, rubro_id?, periodo }. presupuestos: [{ obra_id, rubro_id, periodo, monto }].
+export function desgloseDeLinea(linea, movimientos, indice, presupuestos = [], tipo = 'gasto') {
+  const esGasto = tipo === 'gasto'
+  const { obra_id, rubro_id, periodo } = linea
+  const cuenta = esGasto ? (indice.facturas[`${obra_id}|${rubro_id}|${periodo}`] ?? []) : (indice.ventas[`${obra_id}|${periodo}`] ?? [])
+  const total = Math.round(cuenta.reduce((s, m) => s + Number(m.monto_bruto), 0) * 100) / 100
+  const valido = m => m.estado_proyeccion !== 'no_cumple'
+  const mismoTipo = m => (esGasto ? (m.categoria === 'factura' && m.tipo === 'egreso') : (m.categoria === 'ingreso_cliente' && m.tipo === 'ingreso'))
+  const candidatos = []
+  const vecinos = [mesVecino(periodo, -1), mesVecino(periodo, 1)]
+  ;(movimientos ?? []).forEach(m => {
+    if (!valido(m) || !mismoTipo(m)) return
+    if (esGasto) {
+      if (m.obra_id === obra_id && m.periodo === periodo && m.rubro_id !== rubro_id) candidatos.push({ mov: m, motivo: 'otro_rubro' })
+      else if (m.obra_id === obra_id && m.rubro_id === rubro_id && vecinos.includes(m.periodo)) candidatos.push({ mov: m, motivo: 'otro_periodo' })
+      else if (m.obra_id && m.obra_id !== obra_id && m.rubro_id === rubro_id && m.periodo === periodo
+        && !presupuestos.some(p => p.obra_id === m.obra_id && p.rubro_id === rubro_id && p.periodo === periodo)) candidatos.push({ mov: m, motivo: 'otra_obra' })
+    } else if (m.obra_id === obra_id && vecinos.includes(m.periodo)) candidatos.push({ mov: m, motivo: 'otro_periodo' })
+  })
+  candidatos.sort((a, b) => Number(b.mov.monto_bruto) - Number(a.mov.monto_bruto))
+  return { cuenta, total, candidatos }
+}

@@ -2,7 +2,7 @@
 // Vista principal del Cash Flow Predictivo.
 // Ruta: /finanzas/cashflow
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import { traerTodo } from '../../lib/traerTodo'
@@ -11,7 +11,7 @@ import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
 import FormularioMovimiento from './components/FormularioMovimiento'
 import SeccionDebitos from './components/SeccionDebitos'
 import ModalNotas from './components/ModalNotas'
-import { combinarConProyeccion, dividirPorPorcentajes } from '../../lib/proyeccionPresupuesto'
+import { combinarConProyeccion, dividirPorPorcentajes, indexarRegistrado, desgloseDeLinea } from '../../lib/proyeccionPresupuesto'
 import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium } from '../directorio/utilsDirectorio'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -272,6 +272,8 @@ export default function CashFlow() {
   const [filtroBusqueda,   setFiltroBusqueda]   = useState('')
 
   const [filaEditando,   setFilaEditando]   = useState(null)
+  // true cuando la edición se abrió desde el detalle de una línea gris: el formulario se muestra ahí y no en su fecha
+  const [editorEnDetalle, setEditorEnDetalle] = useState(false)
   const [valoresEdicion, setValoresEdicion] = useState({})
   const [guardandoEdicion, setGuardandoEdicion] = useState(false)
   const [errorEdicion,     setErrorEdicion]     = useState('')
@@ -537,6 +539,7 @@ export default function CashFlow() {
   }, [filasFiltradas])
 
   function handleIniciarEdicion(m) {
+    setEditorEnDetalle(false)
     setFilaEditando(m.id)
     setErrorEdicion('')
     setValoresEdicion({
@@ -553,6 +556,11 @@ export default function CashFlow() {
       observaciones:     m.observaciones ?? '',
       estado:            m.estado,
     })
+  }
+
+  function handleEditarDesdeDetalle(m) {
+    handleIniciarEdicion(m)
+    setEditorEnDetalle(true)
   }
 
   function handleCancelarEdicion() {
@@ -1027,6 +1035,10 @@ export default function CashFlow() {
               onCancelarEdicion={handleCancelarEdicion}
               onBorrarEdicion={handleBorrarEdicion}
               onNotas={mov => setModalNotas(mov)}
+              movimientosBase={movimientos}
+              presupuestosBase={presupuestos}
+              editorEnDetalle={editorEnDetalle}
+              onEditarDesdeDetalle={handleEditarDesdeDetalle}
               filaAjustando={filaAjustando}
               valorAjuste={valorAjuste}
               guardandoAjuste={guardandoAjuste}
@@ -1122,6 +1134,7 @@ export default function CashFlow() {
 
 function TablaCashFlow({
   filas, saldoInicial, obras, rubros,
+  movimientosBase, presupuestosBase, editorEnDetalle, onEditarDesdeDetalle,
   filaEditando, valoresEdicion, guardandoEdicion, errorEdicion,
   onIniciarEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion, onBorrarEdicion, onNotas,
   filaAjustando, valorAjuste, guardandoAjuste, errorAjuste,
@@ -1131,6 +1144,14 @@ function TablaCashFlow({
   filaEditandoFecha, nuevaFechaEstimada, nuevoConceptoVenta, guardandoFecha, errorFecha,
   onIniciarEditarFecha, onCambiarFechaEstimada, onCambiarConceptoVenta, onGuardarFecha, onGuardarDivision, onQuitarDivision, onCancelarEditarFecha, onCerrarProyeccion,
 }) {
+  // Detalle de lo registrado contra cada línea gris (gasto o venta proyectada): se abre con "Ver detalle".
+  const [detalleAbierto, setDetalleAbierto] = useState(() => new Set())
+  const indiceRegistrado = useMemo(() => indexarRegistrado(movimientosBase), [movimientosBase])
+  const alternarDetalle = id => setDetalleAbierto(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const cantidadRegistrada = m => (m.categoria === 'venta_proyectada'
+    ? indiceRegistrado.ventas[`${m.obra_id}|${m.periodo}`]
+    : indiceRegistrado.facturas[`${m.obra_id}|${m.rubro_id}|${m.periodo}`])?.length ?? 0
+
   const filasRender = useMemo(() => {
     const resultado   = []
     let ultimoPeriodo = null
@@ -1175,7 +1196,7 @@ function TablaCashFlow({
               const { mov: m } = fila
               const saldoNeg   = m.saldoAcumulado < 0
 
-              if (filaEditando === m.id) {
+              if (filaEditando === m.id && !editorEnDetalle) {
                 return (
                   <FilaEdicionMovimiento
                     key={fila.key}
@@ -1244,8 +1265,11 @@ function TablaCashFlow({
                 )
               }
 
+              const esLinea = m._virtual && (m.categoria === 'gasto_proyectado' || m.categoria === 'venta_proyectada')
+              const abierto = esLinea && detalleAbierto.has(m.id)
               return (
-                <tr key={fila.key}
+                <Fragment key={fila.key}>
+                <tr
                   className={`border-b border-slate-100/80 last:border-0 transition-colors
                     ${m._virtual ? 'bg-slate-50/40' : saldoNeg ? 'bg-red-50/60' : 'hover:bg-slate-50/60'}`}>
                   <td className="px-3.5 py-3.5 text-slate-500 text-xs whitespace-nowrap">
@@ -1282,6 +1306,9 @@ function TablaCashFlow({
                         title={`Presupuestado: ${fmtARS(m._presupuestado)} — Ya facturado: ${fmtARS(m._gastoReal)}`}>
                         {m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar
                         <span className="block not-italic text-slate-600 font-medium uppercase">Período {periodoCorto(m.periodo)}</span>
+                        {m._gastoReal > 0
+                          ? <span className="block not-italic text-slate-500">Ya facturado: {fmtARS(m._gastoReal)} de {fmtARS(m._presupuestado)}</span>
+                          : <span className="block not-italic text-slate-400">Sin facturas cargadas</span>}
                         {m._partes > 1 && (
                           <span className="block not-italic text-cyan-700 font-semibold">
                             Parte {m._parte} de {m._partes}{m._porcentaje ? ` · ${m._porcentaje}%` : ''}
@@ -1299,11 +1326,9 @@ function TablaCashFlow({
                             Parte {m._parte} de {m._partes}{m._porcentaje ? ` · ${m._porcentaje}%` : ''}
                           </span>
                         )}
-                        {m._gastoReal > 0 && (
-                          <span className="block not-italic text-slate-400">
-                            Ya registrado: {fmtARS(m._gastoReal)} de {fmtARS(m._presupuestado)}
-                          </span>
-                        )}
+                        {m._gastoReal > 0
+                          ? <span className="block not-italic text-slate-500">Ya registrado: {fmtARS(m._gastoReal)} de {fmtARS(m._presupuestado)}</span>
+                          : <span className="block not-italic text-slate-400">Nada registrado todavía</span>}
                         {m._afectaCashflow === false && (
                           <span className="block not-italic text-amber-600 font-medium" title="Período anterior al mes en curso: se muestra como dato, pero no suma ni resta en el saldo del Cash Flow">
                             No afecta el saldo (período pasado)
@@ -1351,6 +1376,13 @@ function TablaCashFlow({
                     ) : m._virtual ? (
                       <div className="flex items-center justify-end gap-3">
                         <button
+                          onClick={() => alternarDetalle(m.id)}
+                          title="Ver qué facturas o ventas ya están registradas contra esta línea, para revisarlas y corregir lo que esté mal cargado"
+                          className="text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors"
+                        >
+                          {abierto ? 'Ocultar detalle' : `Ver detalle (${cantidadRegistrada(m)})`}
+                        </button>
+                        <button
                           onClick={() => onIniciarEditarFecha(m)}
                           disabled={filaEditandoFecha !== null}
                           title="Estimado por Operaciones — podés ajustar la fecha o dividirlo en partes"
@@ -1396,12 +1428,119 @@ function TablaCashFlow({
                     )}
                   </td>
                 </tr>
+                {abierto && (
+                  <FilasDesglose
+                    m={m} movimientos={movimientosBase} indice={indiceRegistrado} presupuestos={presupuestosBase}
+                    obras={obras} rubros={rubros}
+                    filaEditando={filaEditando} editorEnDetalle={editorEnDetalle} valoresEdicion={valoresEdicion}
+                    guardandoEdicion={guardandoEdicion} errorEdicion={errorEdicion}
+                    onCambiarEdicion={onCambiarEdicion} onGuardarEdicion={onGuardarEdicion} onCancelarEdicion={onCancelarEdicion}
+                    onBorrarEdicion={onBorrarEdicion} onNotas={onNotas} onEditar={onEditarDesdeDetalle}
+                  />
+                )}
+                </Fragment>
               )
             })}
           </tbody>
         </table>
       </div>
     </div>
+  )
+}
+
+// ─── Detalle de lo registrado contra una línea gris ──────────────────────────────────────────────
+
+const MOTIVO_CANDIDATO = {
+  otro_rubro:   'Misma obra y período, pero cargada en otro rubro',
+  otro_periodo: 'Misma obra, pero cargada en otro período',
+  otra_obra:    'Mismo rubro y período, pero en otra obra que no tiene presupuesto de eso',
+}
+
+// Filas que se abren debajo de un gasto proyectado o una venta proyectada: lo que el Cash Flow ya descuenta de esa línea
+// (misma obra + rubro + período, o obra + período en ventas) y lo que NO descuenta pero podría ser de ella. Cada fila se
+// puede corregir con "Editar" (obra, rubro, período, importe...) y la línea se recalcula sola al guardar.
+function FilasDesglose({ m, movimientos, indice, presupuestos, obras, rubros, filaEditando, editorEnDetalle, valoresEdicion,
+  guardandoEdicion, errorEdicion, onCambiarEdicion, onGuardarEdicion, onCancelarEdicion, onBorrarEdicion, onNotas, onEditar }) {
+  const esVenta = m.categoria === 'venta_proyectada'
+  const { cuenta, total, candidatos } = desgloseDeLinea(m._claveFecha, movimientos, indice, presupuestos, esVenta ? 'venta' : 'gasto')
+  const [verTodos, setVerTodos] = useState(false)
+  const rubroDe = id => rubros.find(x => x.id === id)?.nombre ?? 'sin rubro'
+  const obraDe = id => obras.find(x => x.id === id)?.codigo ?? '—'
+  const visibles = verTodos ? candidatos : candidatos.slice(0, 8)
+  const palabra = esVenta ? 'ventas' : 'facturas'
+
+  const fila = (mov, motivo) => {
+    if (filaEditando === mov.id && editorEnDetalle) {
+      return (
+        <FilaEdicionMovimiento
+          key={mov.id} mov={mov} obras={obras} rubros={rubros} valores={valoresEdicion}
+          guardando={guardandoEdicion} error={errorEdicion} onChange={onCambiarEdicion}
+          onGuardar={() => onGuardarEdicion(mov.id)} onCancelar={onCancelarEdicion}
+          onBorrar={() => onBorrarEdicion(mov.id)} onNotas={() => onNotas(mov)}
+        />
+      )
+    }
+    return (
+      <tr key={mov.id} style={{ backgroundColor: '#fbfdfe' }} className="border-b border-slate-100">
+        <td colSpan={9} className="px-4 py-2">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs pl-6">
+            <span className="text-slate-500 w-20">{mov.fecha_pago ? fmtFecha(mov.fecha_pago) : 'sin fecha'}</span>
+            <span className={`font-semibold px-2 py-0.5 rounded-md ${mov.estado === 'ejecutado' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+              {mov.estado === 'ejecutado' ? 'Ejecutado' : 'Proyectado'}
+            </span>
+            <span className="text-slate-800 font-semibold min-w-[180px]">{mov.proveedor_cliente ?? mov.concepto ?? '—'}{mov.numero_factura ? <span className="font-normal text-slate-400"> · Nº {mov.numero_factura}</span> : null}</span>
+            <span className="text-slate-500">Obra {obraDe(mov.obra_id)} · {rubroDe(mov.rubro_id)} · período {mov.periodo ? mov.periodo.slice(0, 7) : '—'}</span>
+            <span className="tabular-nums font-semibold text-slate-700 ml-auto">{fmtARS(mov.monto_bruto)}</span>
+            <button onClick={() => onEditar(mov)} disabled={filaEditando !== null}
+              className="font-semibold disabled:opacity-30 disabled:cursor-not-allowed" style={{ color: '#0e7490' }}>Editar</button>
+          </div>
+          {motivo && <p className="text-[11px] text-amber-700 pl-6 mt-0.5">{MOTIVO_CANDIDATO[motivo]}.</p>}
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <>
+      <tr style={{ backgroundColor: '#f1f7fa' }} className="border-b border-slate-200">
+        <td colSpan={9} className="px-4 py-3">
+          <p className="text-xs font-bold text-slate-700">
+            Lo que ya está registrado contra esta línea: {fmtARS(total)} de {fmtARS(m._presupuestado ?? 0)}
+            <span className="font-normal text-slate-500"> · {cuenta.length} {cuenta.length === 1 ? (esVenta ? 'venta' : 'factura') : palabra} · falta {fmtARS(Math.max(0, (m._presupuestado ?? 0) - total))}</span>
+          </p>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            {esVenta
+              ? 'Son las ventas cargadas con la misma obra y período. Se restan de lo que proyectó Operaciones.'
+              : 'Son las facturas cargadas con la misma obra, rubro y período. Se restan del presupuesto de Operaciones: lo que queda es el gasto proyectado.'}
+            {' '}Si falta alguna o hay una de más, corregí su obra, rubro o período con "Editar" y la línea se recalcula sola.
+          </p>
+        </td>
+      </tr>
+      {cuenta.length === 0 && (
+        <tr style={{ backgroundColor: '#fbfdfe' }} className="border-b border-slate-100">
+          <td colSpan={9} className="px-4 py-2.5 text-xs text-slate-400 pl-10">No hay ninguna {esVenta ? 'venta' : 'factura'} registrada contra esta línea.</td>
+        </tr>
+      )}
+      {cuenta.map(mov => fila(mov, null))}
+      {candidatos.length > 0 && (
+        <tr style={{ backgroundColor: '#fffbeb' }} className="border-b border-amber-100">
+          <td colSpan={9} className="px-4 py-2.5">
+            <p className="text-xs font-bold text-amber-800">
+              Cargadas que NO se descuentan pero podrían ser de esta línea ({candidatos.length})
+              <span className="font-normal text-amber-700"> — si alguna es de esta obra, rubro y período, corregila con "Editar".</span>
+            </p>
+          </td>
+        </tr>
+      )}
+      {visibles.map(c => fila(c.mov, c.motivo))}
+      {candidatos.length > visibles.length && (
+        <tr style={{ backgroundColor: '#fffbeb' }} className="border-b border-amber-100">
+          <td colSpan={9} className="px-4 py-2 pl-10">
+            <button onClick={() => setVerTodos(true)} className="text-xs font-semibold" style={{ color: '#0e7490' }}>Ver las {candidatos.length - visibles.length} restantes</button>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 
