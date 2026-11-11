@@ -32,6 +32,11 @@
 // reales que ya están cargados ese día), y es determinístico: no cambia al recargar ni
 // entre usuarios. Las facturas se siguen descontando igual que antes.
 //
+// Miércoles y jueves: en los extractos del 30/9 al 8/11/2026 el 44% de lo pagado a proveedores salió el miércoles y el 50% el
+// jueves (los pagos de $ 5 M o más, 40% y 60%). Por eso cada línea automática con presupuesto de $ 1 M o más se parte en dos:
+// PORCENTAJE_MIERCOLES el miércoles que le toca y el resto el jueves siguiente. Se reparte el saldo que queda DESPUÉS de
+// descontar las facturas, así que cada factura baja las dos partes en proporción. Las líneas más chicas quedan enteras el miércoles.
+//
 // Excepción (DIVIDIR_EN_MIERCOLES): una línea muy grande y poco real se reparte en partes iguales
 // entre los 4 miércoles de pago (y, si se indica, además el primer miércoles del mes siguiente), en vez de caer
 // entera en uno solo.
@@ -41,6 +46,77 @@
 // de descontar las facturas (o ventas reales): si llega una factura, todas las partes bajan en proporción, y si la
 // línea se factura entera desaparecen todas. Una división manual manda sobre la fecha única y sobre las divisiones
 // fijas de este archivo; "cerrar proyección" manda sobre todo.
+
+// Impuestos de los cobros. Cada factura de venta que todavía no se cobró genera CUATRO egresos proyectados propios, en la
+// misma fecha del cobro y calculados sobre el importe de esa factura: IIBB 3% (el banco lo retiene sobre lo acreditado: en
+// los extractos de septiembre y octubre de 2026 fue exactamente 3,00%), SUSS 2%, Ganancias 2% y Ley 25413 sobre el crédito
+// 0,60% (también exacta en esos extractos). Una venta de $ 100 trae $ 3 + $ 2 + $ 2 + $ 0,60. La Ley 25413 sobre lo que SALE
+// del banco (0,6% de los pagos) no está proyectada. Alcanza a la venta proyectada de Operaciones (cada parte, si está dividida) y a las ventas ya cargadas
+// que todavía están proyectadas, desde hoy en adelante; no a FIMA, ni a lo "no se cumple", ni a períodos que no afectan el
+// saldo. Cuando la venta se cobra (se marca ejecutada) estas filas desaparecen y los impuestos reales se cargan del
+// extracto. Si cambia o se mueve la venta, los tres egresos se mueven con ella. Las tasas se cambian acá.
+export const TASAS_IMPUESTOS_COBRO = [
+  { clave: 'iibb', etiqueta: 'IIBB', tasa: 0.03 },
+  { clave: 'suss', etiqueta: 'SUSS', tasa: 0.02 },
+  { clave: 'ganancias', etiqueta: 'Ganancias', tasa: 0.02 },
+  { clave: 'ley25413', etiqueta: 'Ley 25413', tasa: 0.006 },
+]
+
+const montoDe = m => Number(m.montoEfectivo ?? (m.estado === 'ejecutado' ? (m.monto_neto ?? m.monto_bruto) : m.monto_bruto)) || 0
+const porcentajeTexto = tasa => `${Math.round(tasa * 10000) / 100}%`
+
+// filas: movimientos reales + filas virtuales. Devuelve un objeto por impuesto y por venta:
+// { origen, impuesto, etiqueta, tasa, fecha, base, monto }, ordenado por fecha.
+export function calcularImpuestosDeCobros(filas, hoy = new Date(), tasas = TASAS_IMPUESTOS_COBRO) {
+  const hoyISO = isoLocalDe(hoy)
+  const resultado = []
+  filas.forEach((m, i) => {
+    if (m.tipo !== 'ingreso' || (m.categoria !== 'ingreso_cliente' && m.categoria !== 'venta_proyectada')) return
+    if (m.estado === 'ejecutado' || m.estado_proyeccion === 'no_cumple' || m._afectaCashflow === false) return
+    if (!m.fecha_pago || m.fecha_pago < hoyISO) return
+    const baseCobro = montoDe(m)
+    if (!(baseCobro > 0)) return
+    tasas.forEach((t, ti) => {
+      const monto = Math.round(baseCobro * t.tasa * 100) / 100
+      if (monto > 0) resultado.push({ origen: m, origenId: m.id ?? `fila-${i}`, orden: ti + 1, impuesto: t.clave, etiqueta: t.etiqueta, tasa: t.tasa, fecha: m.fecha_pago, base: baseCobro, monto })
+    })
+  })
+  return resultado.sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0))
+}
+
+// Fila con la forma de un movimiento real, marcada _virtual e _impuestoVenta (la pantalla no ofrece editarla ni cerrarla).
+export function construirFilaVirtualImpuestoVenta(g) {
+  const o = g.origen
+  return {
+    id: `virtual-impuesto-${g.origenId}-${g.orden}-${g.impuesto}`, // ordena por venta y, dentro de cada una, IIBB, SUSS, Ganancias
+    _virtual: true,
+    _impuestoVenta: true,
+    _impuestoEtiqueta: g.etiqueta,
+    _tasa: g.tasa,
+    _baseCobro: g.base,
+    _clienteVenta: o.proveedor_cliente ?? o._conceptoManual ?? null,
+    tipo: 'egreso',
+    categoria: 'impuesto_venta_proyectado',
+    proveedor_cliente: null,
+    numero_factura: o.numero_factura ?? null,
+    concepto: `${g.etiqueta} ${porcentajeTexto(g.tasa)} s/ cobro`,
+    observaciones: null,
+    periodo: o.periodo ?? `${g.fecha.slice(0, 7)}-01`,
+    fecha_pago: g.fecha,
+    fecha_pago_original: null,
+    estado: 'proyectado',
+    estado_proyeccion: 'normal',
+    cuenta_id: null,
+    obra_id: null,
+    rubro_id: null,
+    obras: o.obras ?? null,
+    rubros: null,
+    cuentas: null,
+    monto_bruto: g.monto,
+    monto_neto: null,
+    montoEfectivo: g.monto,
+  }
+}
 
 // Rubros que Operaciones puede presupuestar pero que NO generan gasto proyectado en el Cash Flow: no son un pago
 // futuro de proveedores sino un reparto interno (Gastos Generales = 13% de las ventas, administración de obra) o
@@ -78,6 +154,11 @@ function inicioMesAnteriorA(fecha) {
 const PAGO_A_30_DIAS_DESDE = '2026-10-01'
 const CANTIDAD_MIERCOLES_DE_PAGO = 4
 const pagaA30Dias = periodo => periodo >= PAGO_A_30_DIAS_DESDE
+
+// Reparto miércoles / jueves de las líneas automáticas. El umbral se mide sobre lo presupuestado y no sobre el saldo, para
+// que una línea no pase de dos partes a una sola (y cambie de día su plata) cuando entra una factura.
+const PORCENTAJE_MIERCOLES = 55
+const UMBRAL_REPARTO_JUEVES = 1_000_000
 
 // Líneas (obra + rubro + período) que NO caen enteras en un miércoles: su saldo sin facturar se divide
 // en partes iguales entre los 4 miércoles de pago. Es una decisión puntual de Finanzas, no una regla general.
@@ -139,6 +220,12 @@ export function dividirPorPorcentajes(monto, partes) {
   })
 }
 
+// Día siguiente a una fecha "AAAA-MM-DD".
+function diaSiguiente(fechaISO) {
+  const [a, m, d] = fechaISO.split('-').map(Number)
+  return isoLocalDe(new Date(a, m - 1, d + 1))
+}
+
 function isoLocalDe(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
@@ -177,7 +264,8 @@ function hashEstable(texto) {
 // el mismo presupuesto da siempre el mismo reparto, al recargar y entre usuarios.
 function repartirEnMiercoles(lineas, periodo, precarga = {}) {
   const miercoles = primerosMiercolesDelMesSiguiente(periodo, CANTIDAD_MIERCOLES_DE_PAGO)
-  const carga = miercoles.map(f => precarga[f] ?? 0)
+  // La carga de cada semana de pago es la del miércoles más la del jueves siguiente (ahí cae la otra parte de cada línea).
+  const carga = miercoles.map(f => (precarga[f] ?? 0) + (precarga[diaSiguiente(f)] ?? 0))
   const ordenadas = [...lineas].sort((a, b) =>
     b.peso - a.peso || hashEstable(a.clave) - hashEstable(b.clave) || a.clave.localeCompare(b.clave))
   const mapa = {}
@@ -313,6 +401,19 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
       // Si el miércoles asignado ya pasó y todavía queda gasto sin facturar, se corre al próximo
       // miércoles: una fila proyectada nunca queda en el pasado (no tiene que tocar el saldo de hoy).
       if (miercolesPorClave[k] && fechaPago <= hoyISO) fechaPago = proximoMiercoles
+      // Miércoles y jueves: las líneas de $ 1 M o más se parten (saldo ya descontado por las facturas).
+      if (miercolesPorClave[k] && presupuestado >= UMBRAL_REPARTO_JUEVES) {
+        const porcentajes = [PORCENTAJE_MIERCOLES, 100 - PORCENTAJE_MIERCOLES]
+        const fechas = [fechaPago, diaSiguiente(fechaPago)]
+        const montos = dividirPorPorcentajes(saldoProyectado, porcentajes.map(p => ({ porcentaje: p })))
+        const division = fechas.map((f, i) => ({ porcentaje: porcentajes[i], fecha: f }))
+        fechas.forEach((f, i) => {
+          if (montos[i] <= 0) return
+          resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i], fechaPago: f,
+            parte: i + 1, partes: 2, porcentaje: porcentajes[i], division, repartoSemanal: true })
+        })
+        return
+      }
     }
     resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado, fechaPago })
   })
@@ -548,7 +649,9 @@ export function combinarConProyeccion(movimientos, presupuestos, ventasProyectad
     ...gastosProyectados.map(p => construirFilaVirtual(p, obras, rubros)),
     ...ventasPendientes.map(v => construirFilaVirtualVenta(v, obras)),
   ]
-  return [...movimientos, ...virtuales].sort((a, b) => {
+  // Los impuestos se calculan sobre cada venta (la proyectada y las ya cargadas), por eso van después de armar las demás filas.
+  const impuestosVenta = calcularImpuestosDeCobros([...movimientos, ...virtuales], hoy).map(g => construirFilaVirtualImpuestoVenta(g))
+  return [...movimientos, ...virtuales, ...impuestosVenta].sort((a, b) => {
     const fa = a.fecha_pago ?? a.periodo ?? ''
     const fb = b.fecha_pago ?? b.periodo ?? ''
     if (fa !== fb) return fa < fb ? -1 : 1

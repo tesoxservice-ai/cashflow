@@ -69,6 +69,7 @@ const BADGE_CAT = {
   reintegro_otros:     'bg-teal-50 text-teal-700',
   gasto_proyectado:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
   venta_proyectada:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
+  impuesto_venta_proyectado: 'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
   otro:              'bg-slate-100 text-slate-600',
 }
 const LABEL_CAT = {
@@ -83,6 +84,7 @@ const LABEL_CAT = {
   reintegro_otros:     'Otros reintegros',
   gasto_proyectado:  'Gasto proyectado (presupuesto)',
   venta_proyectada:  'Venta proyectada (sin registrar)',
+  impuesto_venta_proyectado: 'Impuesto s/ cobro (proyectado)',
   otro:              'Otro',
 }
 
@@ -1308,6 +1310,13 @@ function TablaCashFlow({
                           </span>
                         )}
                       </span>
+                    ) : m._impuestoVenta ? (
+                      <span className="truncate block italic text-slate-500" title="Se calcula solo sobre el cobro de esa venta: IIBB 3%, SUSS 2%, Ganancias 2% y Ley 25413 0,6% (créditos).">
+                        {m._impuestoEtiqueta} {Math.round(m._tasa * 10000) / 100}% s/ cobro
+                        <span className="block not-italic text-slate-400">
+                          de {fmtARS(m._baseCobro)}{m._clienteVenta ? ` · ${m._clienteVenta}` : ''}
+                        </span>
+                      </span>
                     ) : (
                       <span className="truncate block" title={m.proveedor_cliente ?? m.concepto ?? ''}>
                         {m.proveedor_cliente ?? m.concepto ?? '—'}
@@ -1337,7 +1346,9 @@ function TablaCashFlow({
                     </span>
                   </td>
                   <td className="px-3.5 py-3.5 text-right whitespace-nowrap">
-                    {m._virtual ? (
+                    {m._impuestoVenta ? (
+                      <span className="text-xs text-slate-400 italic" title="Se calcula solo: tasa × importe de la venta. Cuando se cobra, se cargan los impuestos reales del extracto.">Calculado</span>
+                    ) : m._virtual ? (
                       <div className="flex items-center justify-end gap-3">
                         <button
                           onClick={() => onIniciarEditarFecha(m)}

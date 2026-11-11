@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parsearTSV, detectarColumnas, parseMonto, parseFecha, parsePeriodo, normalizarFila, mismoProveedor,
-  mismoNro, analizarPegado, resumir, avisoPresupuesto, construirMovimiento } from './importarFacturas.js'
+  mismoNro, analizarPegado, resumir, avisoPresupuesto, construirMovimiento, construirActualizacionFecha } from './importarFacturas.js'
 
 const HOY = '2026-10-20'
 const ENC = ['FACTURA', 'Ingresó FC', 'NRO FC', 'RUBRO', 'Periodo Facturado ', 'FF', 'Importe', 'DIAS COMPROMISO', 'ESTADO PAGO', 'Forma de pago', 'Estado', 'F.COMP', 'cash flow ', 'OBRA', 'APROBADOR'].join('\t')
@@ -229,4 +229,81 @@ test('"MENOS NC xxx" en el proveedor pasa a observaciones y no ensucia el nombre
 test('ALQ SEG HYS OTROS GASTOS se importa como Otros Gastos Operativos (Gastos Generales no se factura)', () => {
   const [f] = analizar(fila('ALQUILERES SA', '1-100', 'ALQ SEG HYS OTROS GASTOS', 'OCTUBRE', '1/10/26', '$100,000.00', 'PENDIENTE', 'TRF', 'Aprobada', '4/11/26', '678'))
   assert.equal(f.rubro, 'Otros Gastos Operativos')
+})
+
+// ─── Misma factura con otra fecha de pago: se actualiza, no se duplica ──────────────────────────
+
+const exF = (prov, nro, monto, obra, extra = {}) => ({
+  id: 'm1', proveedor_cliente: prov, numero_factura: nro, monto_bruto: monto, obraCodigo: obra,
+  estado: 'proyectado', fecha_pago: '2026-11-11', fecha_pago_original: null, estado_proyeccion: 'normal', ...extra,
+})
+const luna = cf => fila('LUNA INDUMENTARIA', '3-12244', 'EPP', 'OCTUBRE', '17/10/26', '$1,441,412.50', 'PENDIENTE', 'TRF', 'Aprobada', cf, '2026')
+const lunaCargada = (extra = {}) => exF('LUNA INDUMENTARIA', '3-12244', 1441412.5, '2026', extra)
+
+test('la misma factura con otra fecha de pago en el Excel se marca "cambio" y no se duplica', () => {
+  const [f] = analizar(luna('18/11/26'), [lunaCargada()])
+  assert.equal(f.estado, 'cambio')
+  assert.deepEqual(f.cambio, { id: 'm1', fechaAnterior: '2026-11-11', fechaNueva: '2026-11-18', fechaOriginal: '2026-11-11' })
+  assert.match(f.motivos[0], /11\/11\/2026 al 18\/11\/2026/)
+  assert.deepEqual(construirActualizacionFecha(f), {
+    id: 'm1', fechaAnterior: '2026-11-11',
+    cambios: { fecha_pago: '2026-11-18', fecha_pago_original: '2026-11-11', estado_proyeccion: 'reprogramado' },
+  })
+})
+
+test('misma fecha: sigue siendo "ya cargada"', () => {
+  const [f] = analizar(luna('11/11/26'), [lunaCargada()])
+  assert.equal(f.estado, 'cargada')
+  assert.equal(f.cambio, undefined)
+})
+
+test('una factura ya ejecutada (paga) o marcada "no se cumple" no se toca aunque cambie la fecha', () => {
+  assert.equal(analizar(luna('18/11/26'), [lunaCargada({ estado: 'ejecutado' })])[0].estado, 'cargada')
+  assert.equal(analizar(luna('18/11/26'), [lunaCargada({ estado_proyeccion: 'no_cumple' })])[0].estado, 'cargada')
+})
+
+test('si Finanzas la reprogramó a mano y el Excel sigue con la fecha de antes, se respeta lo de Finanzas', () => {
+  const reprogramada = lunaCargada({ fecha_pago: '2026-11-18', fecha_pago_original: '2026-11-11', estado_proyeccion: 'reprogramado' })
+  const [igualAlOriginal] = analizar(luna('11/11/26'), [reprogramada])
+  assert.equal(igualAlOriginal.estado, 'cargada')
+  assert.match(igualAlOriginal.motivos[0], /Finanzas la reprogramó al 18\/11\/2026/)
+  // pero si el Excel trae una fecha nueva (distinta de las dos), sí se actualiza y se conserva la fecha original
+  const [fechaNueva] = analizar(luna('25/11/26'), [reprogramada])
+  assert.equal(fechaNueva.estado, 'cambio')
+  assert.equal(fechaNueva.cambio.fechaOriginal, '2026-11-11')
+})
+
+test('con más de una coincidencia no se actualiza nada (no se sabe cuál es)', () => {
+  const [f] = analizar(luna('18/11/26'), [lunaCargada(), lunaCargada({ id: 'm2' })])
+  assert.equal(f.estado, 'cargada')
+})
+
+test('mismo número, importe y obra con el proveedor mal tipeado también detecta el cambio de fecha', () => {
+  const [f] = analizar(luna('18/11/26'), [exF('LUNA INDUMENT.', '3-12244', 1441412.5, '2026')])
+  assert.equal(f.estado, 'cambio')
+})
+
+test('otro importe u otra obra no es un cambio de fecha: sigue yendo a revisar', () => {
+  assert.equal(analizar(luna('18/11/26'), [exF('LUNA INDUMENTARIA', '3-12244', 999999, '2026')])[0].estado, 'revisar')
+  assert.equal(analizar(luna('18/11/26'), [exF('LUNA INDUMENTARIA', '3-12244', 1441412.5, '678')])[0].estado, 'revisar')
+})
+
+test('la misma factura pegada dos veces: la primera actualiza y la segunda queda como repetida', () => {
+  const [a, b] = analizar(luna('18/11/26') + '\n' + luna('18/11/26'), [lunaCargada()])
+  assert.equal(a.estado, 'cambio')
+  assert.equal(b.estado, 'cargada')
+})
+
+test('si la nueva fecha ya pasó, igual se detecta el cambio pero con el aviso a la vista', () => {
+  const [f] = analizar(luna('15/10/26'), [lunaCargada()])
+  assert.equal(f.estado, 'cambio')
+  assert.ok(f.motivos.some(m => /ya pasó/.test(m)))
+})
+
+test('el resumen cuenta los cambios aparte y no los suma como facturas nuevas', () => {
+  const filas = analizar(luna('18/11/26') + '\n' + fila('OTRO SA', '9-1', 'MATERIALES', 'OCTUBRE', '1/10/26', '$100,000.00', 'PENDIENTE', 'TRF', 'Aprobada', '4/11/26', '678'), [lunaCargada()])
+  const r = resumir(filas)
+  assert.equal(r.cambio, 1)
+  assert.equal(r.nueva, 1)
+  assert.equal(r.montoNuevas, 100000)
 })

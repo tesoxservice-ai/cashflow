@@ -82,6 +82,7 @@ export function useFimaDatos() {
 
 // Nombre legible de un movimiento (las filas virtuales no tienen proveedor).
 function etiquetaDe(m) {
+  if (m._impuestoVenta) return `${m.concepto}${m._clienteVenta ? ' · ' + m._clienteVenta : ''}`
   if (m.categoria === 'gasto_proyectado') return `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar`
   if (m.categoria === 'venta_proyectada') {
     const mes = m.periodo ? new Date(m.periodo + 'T00:00:00').toLocaleDateString('es-AR', { month: 'long', year: 'numeric' }) : ''

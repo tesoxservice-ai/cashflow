@@ -11,6 +11,8 @@
 // Estados de cada fila al comparar:
 //   nueva     (verde)  no hay coincidencia: se puede importar
 //   cargada   (rojo)   ya está en el Cash Flow (o está repetida en lo pegado): no se importa
+//   cambio    (celeste) es la misma factura ya cargada (mismo proveedor, número, obra e importe) pero el Excel trae otra
+//                      fecha de pago: no se duplica, se actualiza la fecha de pago de la que ya está
 //   revisar   (ámbar)  hay dudas (posible duplicado, varias obras, fecha pasada...): no se importa salvo que se tilde
 //   omitida   (gris)   no corresponde importarla acá (ya pagada en el Excel, sin estado de pago)
 //   error     (gris)   falta un dato o es inválido (monto, rubro, obra, fecha de pago): no se puede importar
@@ -270,8 +272,41 @@ export function mismoProveedor(a, b) {
 
 const mismoMonto = (a, b) => Math.abs(Number(a) - Number(b)) < 0.006
 
+const fmtFechaCorta = f => (f ? f.split('-').reverse().join('/') : '—')
+
+// Qué hacer cuando la factura del Excel coincide exacto con la ya cargada. Casi siempre es "ya cargada", salvo que
+// Jonatan haya cambiado la fecha de pago en el Excel: ahí se propone actualizar la fecha de la factura que ya está.
+// Solo se actualiza si hay UNA sola coincidencia, todavía no se pagó (estado proyectado) y no está "no se cumple".
+// Si Finanzas la reprogramó a mano y el Excel sigue con la fecha de antes (la original), se respeta lo de Finanzas.
+function resolverCoincidenciaExacta(fila, coincidentes, motivoBase, detalle) {
+  const cargada = { estado: 'cargada', motivos: [motivoBase], coincidencias: coincidentes.map(detalle) }
+  if (coincidentes.length !== 1) return cargada
+  const e = coincidentes[0]
+  if (!e.id || !fila.fechaPago || !e.fecha_pago || e.estado !== 'proyectado' || e.estado_proyeccion === 'no_cumple') return cargada
+  if (e.fecha_pago === fila.fechaPago) return cargada
+  if (e.estado_proyeccion === 'reprogramado' && e.fecha_pago_original === fila.fechaPago) {
+    return { ...cargada, motivos: [`${motivoBase} Finanzas la reprogramó al ${fmtFechaCorta(e.fecha_pago)} y el Excel sigue con el ${fmtFechaCorta(fila.fechaPago)}: no se toca.`] }
+  }
+  return {
+    estado: 'cambio',
+    motivos: [`Misma factura ya cargada: la fecha de pago cambió del ${fmtFechaCorta(e.fecha_pago)} al ${fmtFechaCorta(fila.fechaPago)}. Se actualiza la fecha, no se duplica.`, ...fila.avisos],
+    coincidencias: [detalle(e)],
+    cambio: { id: e.id, fechaAnterior: e.fecha_pago, fechaNueva: fila.fechaPago, fechaOriginal: e.fecha_pago_original ?? e.fecha_pago },
+  }
+}
+
+// Datos para actualizar la fecha de una factura ya cargada (clasificada como "cambio"). Queda como reprogramada, con la
+// fecha original guardada, igual que cuando Finanzas la mueve a mano en el Cash Flow.
+export function construirActualizacionFecha(fila) {
+  return {
+    id: fila.cambio.id,
+    fechaAnterior: fila.cambio.fechaAnterior,
+    cambios: { fecha_pago: fila.cambio.fechaNueva, fecha_pago_original: fila.cambio.fechaOriginal, estado_proyeccion: 'reprogramado' },
+  }
+}
+
 // existentes: facturas ya cargadas en el Cash Flow:
-//   { id, proveedor_cliente, numero_factura, monto_bruto, estado, fecha_pago, periodo, obraCodigo }
+//   { id, proveedor_cliente, numero_factura, monto_bruto, estado, fecha_pago, fecha_pago_original, estado_proyeccion, periodo, obraCodigo }
 // Devuelve { estado, motivos[], coincidencias[] } para una fila ya normalizada.
 export function clasificarFila(fila, existentes) {
   const motivos = [...fila.avisos]
@@ -290,14 +325,14 @@ export function clasificarFila(fila, existentes) {
   // 0. Mismo número, importe y obra: es la misma factura aunque el proveedor esté escrito distinto (error de tipeo)
   if (fila.nro && !fila.obraMultiple) {
     const fuertes = existentes.filter(e => mismoNro(e.numero_factura, fila.nro) === true && mismoMonto(e.monto_bruto, fila.monto) && e.obraCodigo === fila.obra)
-    if (fuertes.length) return { estado: 'cargada', motivos: ['Ya cargada: mismo número, importe y obra (el proveedor está escrito distinto).'], coincidencias: fuertes.map(detalle0) }
+    if (fuertes.length) return resolverCoincidenciaExacta(fila, fuertes, 'Ya cargada: mismo número, importe y obra (el proveedor está escrito distinto).', detalle0)
   }
 
   // 1. Mismo número de factura
   const conNro = fila.nro ? mismos.filter(e => mismoNro(e.numero_factura, fila.nro) === true) : []
   if (conNro.length) {
     const exacta = conNro.filter(e => mismoMonto(e.monto_bruto, fila.monto) && !fila.obraMultiple && e.obraCodigo === fila.obra)
-    if (exacta.length) return { estado: 'cargada', motivos: ['Ya cargada: mismo proveedor, número, obra e importe.'], coincidencias: exacta.map(detalle) }
+    if (exacta.length) return resolverCoincidenciaExacta(fila, exacta, 'Ya cargada: mismo proveedor, número, obra e importe.', detalle)
     // Factura prorrateada en varias obras: lo cargado con ese número suma el importe de la factura.
     const suma = conNro.reduce((s, e) => s + Number(e.monto_bruto), 0)
     if (conNro.length > 1 && Math.abs(suma - fila.monto) < 0.05)
@@ -345,7 +380,7 @@ export function analizarPegado(texto, existentes, { hoyISO, obrasPorCodigo = {},
       if (f.rubro && !rubrosPorNombre[f.rubro]) f.errores.push(`El rubro "${f.rubro}" no existe como rubro de obra activo.`)
     }
     let res = clasificarFila(f, existentes)
-    if (res.estado === 'nueva' || res.estado === 'revisar') {
+    if (res.estado === 'nueva' || res.estado === 'revisar' || res.estado === 'cambio') {
       const k = [f.proveedor.toUpperCase().slice(0, 8), normalizarNro(f.nro) ?? '', f.monto, f.obra ?? f.obraExcel].join('|')
       if (vistas.has(k)) res = { estado: 'cargada', motivos: [`Repetida en lo pegado (misma que la fila ${vistas.get(k)}).`], coincidencias: [] }
       else vistas.set(k, i + 1 + (conEncabezado ? 1 : 0))
@@ -357,7 +392,7 @@ export function analizarPegado(texto, existentes, { hoyISO, obrasPorCodigo = {},
 
 // Resumen para las tarjetas de la pantalla
 export function resumir(filas) {
-  const r = { total: filas.length, nueva: 0, cargada: 0, revisar: 0, omitida: 0, error: 0, montoNuevas: 0 }
+  const r = { total: filas.length, nueva: 0, cargada: 0, cambio: 0, revisar: 0, omitida: 0, error: 0, montoNuevas: 0 }
   filas.forEach(f => { r[f.estado]++; if (f.estado === 'nueva') r.montoNuevas += f.monto })
   r.montoNuevas = Math.round(r.montoNuevas * 100) / 100
   return r

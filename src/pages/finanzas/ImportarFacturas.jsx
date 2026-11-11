@@ -3,7 +3,8 @@
 // Exclusivo de Santiago Verdinelli (ver lib/permisos.js).
 //
 // Flujo: copiar filas en Excel → pegarlas acá → se comparan con lo ya cargado en el Cash Flow →
-// vista previa (verde = nueva, rojo = ya cargada, ámbar = revisar, gris = no importable) → confirmar.
+// vista previa (verde = nueva, rojo = ya cargada, celeste = misma factura con otra fecha de pago, ámbar = revisar,
+// gris = no importable) → confirmar. Las celestes no se duplican: se actualiza la fecha de pago de la que ya está.
 // Las facturas se guardan con los mismos campos y reglas que "Nuevo movimiento": como son facturas de egreso con
 // obra + rubro + período, el Cash Flow las descuenta solo del gasto proyectado de Operaciones.
 
@@ -11,13 +12,14 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '../../supabaseClient'
 import { useAuth } from '../../context/AuthContext'
 import { traerTodo } from '../../lib/traerTodo'
-import { analizarPegado, resumir, avisoPresupuesto, construirMovimiento } from '../../lib/importarFacturas'
+import { analizarPegado, resumir, avisoPresupuesto, construirMovimiento, construirActualizacionFecha } from '../../lib/importarFacturas'
 import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
 import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium, CLS_LABEL, CargandoPremium, fmtARS, fmtFecha, hoyISO } from '../directorio/utilsDirectorio'
 
 const ESTILOS = {
   nueva:   { fila: 'bg-emerald-50/70 hover:bg-emerald-50', chip: 'bg-emerald-100 text-emerald-700', texto: 'Nueva' },
   cargada: { fila: 'bg-rose-50/70 hover:bg-rose-50',       chip: 'bg-rose-100 text-rose-700',       texto: 'Ya cargada' },
+  cambio:  { fila: 'bg-sky-50/80 hover:bg-sky-50',         chip: 'bg-sky-100 text-sky-700',         texto: 'Fecha cambiada' },
   revisar: { fila: 'bg-amber-50/70 hover:bg-amber-50',     chip: 'bg-amber-100 text-amber-800',     texto: 'Revisar' },
   omitida: { fila: 'bg-slate-50 hover:bg-slate-100/70 text-slate-500', chip: 'bg-slate-200 text-slate-600', texto: 'No aplica' },
   error:   { fila: 'bg-slate-50 hover:bg-slate-100/70 text-slate-500', chip: 'bg-slate-300 text-slate-700', texto: 'Error' },
@@ -44,7 +46,7 @@ export default function ImportarFacturas() {
         traerTodo(() => supabase.from('rubros').select('id, nombre, tipo, activo').order('id')),
         supabase.from('cuentas').select('id, nombre').order('nombre'),
         traerTodo(() => supabase.from('movimientos')
-          .select('id, proveedor_cliente, numero_factura, monto_bruto, estado, fecha_pago, periodo, obra_id, rubro_id')
+          .select('id, proveedor_cliente, numero_factura, monto_bruto, estado, fecha_pago, fecha_pago_original, estado_proyeccion, periodo, obra_id, rubro_id')
           .eq('categoria', 'factura').eq('tipo', 'egreso').order('id')),
         traerTodo(() => supabase.from('presupuestos').select('id, obra_id, rubro_id, periodo, monto').order('id')),
       ])
@@ -78,9 +80,9 @@ export default function ImportarFacturas() {
     return analizarPegado(texto, base.existentes, { hoyISO: hoyISO(), obrasPorCodigo: base.obrasPorCodigo, rubrosPorNombre: base.rubrosPorNombre })
   }, [texto, base])
 
-  // Las nuevas arrancan tildadas; las de revisión, no.
+  // Las nuevas y los cambios de fecha arrancan tildados; las de revisión, no (y un cambio con avisos, tampoco).
   useEffect(() => {
-    setElegidas(new Set((analisis?.filas ?? []).filter(f => f.estado === 'nueva').map(f => f.n)))
+    setElegidas(new Set((analisis?.filas ?? []).filter(f => f.estado === 'nueva' || (f.estado === 'cambio' && !f.avisos.length)).map(f => f.n)))
     setResultado(null)
   }, [analisis])
 
@@ -105,7 +107,9 @@ export default function ImportarFacturas() {
   const resumen = useMemo(() => resumir(filas), [filas])
   const visibles = filtro === 'todas' ? filas : filas.filter(f => f.estado === filtro || (filtro === 'otras' && (f.estado === 'omitida' || f.estado === 'error')))
   const aImportar = filas.filter(f => elegidas.has(f.n) && (f.estado === 'nueva' || f.estado === 'revisar'))
+  const aActualizar = filas.filter(f => elegidas.has(f.n) && f.estado === 'cambio')
   const montoAImportar = Math.round(aImportar.reduce((s, f) => s + f.monto, 0) * 100) / 100
+  const hayAlgo = aImportar.length > 0 || aActualizar.length > 0
 
   const alternar = n => setElegidas(s => { const x = new Set(s); x.has(n) ? x.delete(n) : x.add(n); return x })
 
@@ -118,7 +122,7 @@ export default function ImportarFacturas() {
     const [obras, movs] = await Promise.all([
       traerTodo(() => supabase.from('obras').select('id, codigo').order('id')),
       traerTodo(() => supabase.from('movimientos')
-        .select('id, proveedor_cliente, numero_factura, monto_bruto, estado, fecha_pago, periodo, obra_id, rubro_id')
+        .select('id, proveedor_cliente, numero_factura, monto_bruto, estado, fecha_pago, fecha_pago_original, estado_proyeccion, periodo, obra_id, rubro_id')
         .eq('categoria', 'factura').eq('tipo', 'egreso').order('id')),
     ])
     if (obras.error || movs.error) { setResultado({ error: 'No se pudo verificar lo ya cargado. No se importó nada.' }); setImportando(false); setConfirmando(false); return }
@@ -129,10 +133,17 @@ export default function ImportarFacturas() {
 
     const omitidas = []
     const listas = []
+    const cambios = []
     aImportar.forEach(f => {
       const ahora = porN[f.n]
-      if (!ahora || ahora.estado === 'cargada' || ahora.estado === 'error' || ahora.estado === 'omitida') omitidas.push({ f, motivo: ahora?.motivos?.[0] ?? 'ya no se puede importar' })
+      if (!ahora || ahora.estado === 'cargada' || ahora.estado === 'error' || ahora.estado === 'omitida' || ahora.estado === 'cambio') omitidas.push({ f, motivo: ahora?.motivos?.[0] ?? 'ya no se puede importar' })
       else listas.push(ahora)
+    })
+    // Cambios de fecha: solo si sigue siendo la misma factura y la misma situación que se vio en la vista previa.
+    aActualizar.forEach(f => {
+      const ahora = porN[f.n]
+      if (ahora?.estado === 'cambio' && ahora.cambio.id === f.cambio.id && ahora.cambio.fechaNueva === f.cambio.fechaNueva) cambios.push(ahora)
+      else omitidas.push({ f, motivo: ahora?.motivos?.[0] ?? 'ya no corresponde actualizar la fecha' })
     })
 
     if (!base.cuentaId) { setResultado({ error: 'No se encontró la cuenta Galicia. No se importó nada.' }); setImportando(false); setConfirmando(false); return }
@@ -145,7 +156,18 @@ export default function ImportarFacturas() {
       if (err) error = 'Hubo un error al guardar. No se cargó ninguna factura (se guarda todo junto o nada).'
       else cargadas = registros.length
     }
-    setResultado({ cargadas, omitidas, error, monto: cargadas ? Math.round(listas.reduce((s, f) => s + f.monto, 0) * 100) / 100 : 0 })
+    // Fechas actualizadas una por una: solo se toca la factura si sigue proyectada y con la fecha que se vio.
+    const actualizadas = [], fallidas = []
+    if (!error) {
+      for (const f of cambios) {
+        const { id, fechaAnterior, cambios: datos } = construirActualizacionFecha(f)
+        const { data, error: errUpd } = await supabase.from('movimientos').update(datos)
+          .eq('id', id).eq('estado', 'proyectado').eq('fecha_pago', fechaAnterior).select('id')
+        if (errUpd || !data?.length) fallidas.push(f)
+        else actualizadas.push(f)
+      }
+    }
+    setResultado({ cargadas, actualizadas, fallidas, omitidas, error, monto: cargadas ? Math.round(listas.reduce((s, f) => s + f.monto, 0) * 100) / 100 : 0 })
     setImportando(false); setConfirmando(false)
     await cargarBase() // las recién cargadas pasan a rojo
   }
@@ -154,6 +176,7 @@ export default function ImportarFacturas() {
     ['todas', `Todas (${resumen.total})`],
     ['nueva', `Nuevas (${resumen.nueva})`],
     ['cargada', `Ya cargadas (${resumen.cargada})`],
+    ['cambio', `Fecha cambiada (${resumen.cambio})`],
     ['revisar', `Revisar (${resumen.revisar})`],
     ['otras', `No importables (${resumen.omitida + resumen.error})`],
   ]
@@ -203,6 +226,7 @@ export default function ImportarFacturas() {
               <li>Solo se importan las filas con <b className="text-slate-700">ESTADO PAGO = PENDIENTE</b>. Las marcadas <i>OK</i> o sin estado no se tocan.</li>
               <li>Rubros: GASTOS OPERATIVOS, EPP y ALQ SEG HYS OTROS GASTOS → Otros Gastos Operativos · SUBCONTRATO, MATERIALES, VEHICULOS, IMPUESTOS → su rubro.</li>
               <li>Se cargan como <b className="text-slate-700">egreso proyectado</b>, cuenta Galicia, igual que desde "Nuevo movimiento". Descuentan solas del gasto proyectado de Operaciones.</li>
+              <li>Si una factura ya cargada (mismo proveedor, número, obra e importe) viene con <b className="text-slate-700">otra fecha de pago</b>, no se duplica: queda en <span className="text-sky-700 font-semibold">Fecha cambiada</span> y se actualiza la fecha de la que ya está (solo si todavía no se pagó y Finanzas no la reprogramó a mano).</li>
               <li>Una factura es <b className="text-slate-700">duplicada</b> si coinciden proveedor + número de factura + obra + importe. Mismo importe con distinto número <b className="text-slate-700">no</b> lo es. Ante la duda queda en <span className="text-amber-700 font-semibold">Revisar</span>.</li>
             </ul>
           </div>
@@ -211,10 +235,11 @@ export default function ImportarFacturas() {
         {analisis && filas.length > 0 && (
           <>
             {/* Resumen */}
-            <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 xl:grid-cols-6 gap-4">
               <CardPremium label="Detectadas" valor={String(resumen.total)} icono={ico('lista')} tono="teal" color="text-slate-900" subLabel="Filas pegadas" />
               <CardPremium label="Nuevas" valor={String(resumen.nueva)} icono={ico('subir')} tono="emerald" color="text-emerald-600" subLabel={fmtARS(resumen.montoNuevas)} />
               <CardPremium label="Ya cargadas" valor={String(resumen.cargada)} icono={ico('bajar')} tono="rose" color="text-rose-600" subLabel="No se importan" />
+              <CardPremium label="Fecha cambiada" valor={String(resumen.cambio)} icono={ico('calendario')} tono="sky" color="text-sky-600" subLabel="Se actualiza la fecha" />
               <CardPremium label="A revisar" valor={String(resumen.revisar)} icono={ico('calendario')} tono="amber" color="text-amber-600" subLabel="Decidís vos" />
               <CardPremium label="No importables" valor={String(resumen.omitida + resumen.error)} icono={ico('billetera')} tono="violet" color="text-slate-900" subLabel="Pagadas, vacías o con error" />
             </div>
@@ -242,7 +267,7 @@ export default function ImportarFacturas() {
                   <tbody>
                     {visibles.map(f => {
                       const e = ESTILOS[f.estado]
-                      const importable = f.estado === 'nueva' || f.estado === 'revisar'
+                      const importable = f.estado === 'nueva' || f.estado === 'revisar' || f.estado === 'cambio'
                       const abierto = detalleAbierto === f.n
                       return (
                         <FilaTabla key={f.n} f={f} e={e} importable={importable} marcada={elegidas.has(f.n)} onMarcar={() => alternar(f.n)}
@@ -260,16 +285,20 @@ export default function ImportarFacturas() {
               <div>
                 <p className="text-slate-900 font-bold text-sm">3 · Confirmar</p>
                 <p className="text-slate-400 text-xs mt-0.5">
-                  {aImportar.length
-                    ? <>Se van a cargar <b className="text-slate-700">{aImportar.length}</b> factura{aImportar.length === 1 ? '' : 's'} por <b className="text-slate-700">{fmtARS(montoAImportar)}</b>
-                        {aImportar.some(f => f.estado === 'revisar') && <> (incluye {aImportar.filter(f => f.estado === 'revisar').length} que marcaste de "Revisar")</>}. Antes de guardar se vuelve a comprobar que ninguna esté ya cargada.</>
-                    : 'No hay facturas seleccionadas para importar.'}
+                  {hayAlgo
+                    ? <>{aImportar.length > 0 && <>Se van a cargar <b className="text-slate-700">{aImportar.length}</b> factura{aImportar.length === 1 ? '' : 's'} por <b className="text-slate-700">{fmtARS(montoAImportar)}</b>
+                        {aImportar.some(f => f.estado === 'revisar') && <> (incluye {aImportar.filter(f => f.estado === 'revisar').length} que marcaste de "Revisar")</>}. </>}
+                        {aActualizar.length > 0 && <>Se va a actualizar la fecha de pago de <b className="text-slate-700">{aActualizar.length}</b> factura{aActualizar.length === 1 ? '' : 's'} que ya estaba{aActualizar.length === 1 ? '' : 'n'} cargada{aActualizar.length === 1 ? '' : 's'}. </>}
+                        Antes de guardar se vuelve a comprobar todo.</>
+                    : 'No hay facturas seleccionadas para importar ni fechas para actualizar.'}
                 </p>
               </div>
-              <button disabled={!aImportar.length || importando || !base?.cuentaId} onClick={() => setConfirmando(true)}
+              <button disabled={!hayAlgo || importando || !base?.cuentaId} onClick={() => setConfirmando(true)}
                 className="inline-flex items-center gap-2 text-white text-sm font-semibold px-6 py-3 rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed shadow-[0_6px_16px_rgba(14,116,144,0.28)] hover:brightness-90"
                 style={{ backgroundColor: '#0e7490' }}>
-                Importar {aImportar.length || ''} factura{aImportar.length === 1 ? '' : 's'}
+                {aImportar.length > 0 && aActualizar.length > 0 ? `Importar ${aImportar.length} y actualizar ${aActualizar.length}`
+                  : aImportar.length === 0 && aActualizar.length > 0 ? `Actualizar ${aActualizar.length} fecha${aActualizar.length === 1 ? '' : 's'}`
+                  : `Importar ${aImportar.length || ''} factura${aImportar.length === 1 ? '' : 's'}`}
               </button>
             </div>
           </>
@@ -284,18 +313,35 @@ export default function ImportarFacturas() {
               <p className="text-rose-700 text-sm font-semibold">{resultado.error}</p>
             ) : (
               <p className="text-emerald-700 text-sm font-semibold">
-                Listo: se cargaron {resultado.cargadas} factura{resultado.cargadas === 1 ? '' : 's'} por {fmtARS(resultado.monto)}.
+                Listo:{' '}
+                {resultado.cargadas > 0 && <>se cargaron {resultado.cargadas} factura{resultado.cargadas === 1 ? '' : 's'} por {fmtARS(resultado.monto)}</>}
+                {resultado.cargadas > 0 && resultado.actualizadas?.length > 0 && ' y '}
+                {resultado.actualizadas?.length > 0 && <>se actualizó la fecha de pago de {resultado.actualizadas.length} factura{resultado.actualizadas.length === 1 ? '' : 's'}</>}
+                {resultado.cargadas === 0 && !resultado.actualizadas?.length && <>no se cargó ninguna factura</>}.
               </p>
+            )}
+            {resultado.actualizadas?.length > 0 && (
+              <ul className="text-xs text-slate-500 mt-2 list-disc pl-5">
+                {resultado.actualizadas.map(f => <li key={f.n}>{f.proveedor} · {f.nro ?? 'sin nº'} · {fmtARS(f.monto)}: {fmtFecha(f.cambio.fechaAnterior)} → {fmtFecha(f.cambio.fechaNueva)}</li>)}
+              </ul>
+            )}
+            {resultado.fallidas?.length > 0 && (
+              <div className="mt-3">
+                <p className="text-rose-700 text-sm font-semibold">{resultado.fallidas.length} fecha{resultado.fallidas.length === 1 ? '' : 's'} no se actualizó (la factura cambió mientras revisabas, o hubo un error). Volvé a pegar para revisarla:</p>
+                <ul className="text-xs text-slate-500 mt-1 list-disc pl-5">
+                  {resultado.fallidas.map(f => <li key={f.n}>Fila {f.n} · {f.proveedor} · {f.nro ?? 'sin nº'}</li>)}
+                </ul>
+              </div>
             )}
             {resultado.omitidas?.length > 0 && (
               <div className="mt-3">
-                <p className="text-amber-700 text-sm font-semibold">{resultado.omitidas.length} no se cargaron porque ya estaban cargadas (alguien las cargó mientras revisabas):</p>
+                <p className="text-amber-700 text-sm font-semibold">{resultado.omitidas.length} no se tocaron porque cambiaron mientras revisabas (ya estaban cargadas o cambiaron de fecha):</p>
                 <ul className="text-xs text-slate-500 mt-1 list-disc pl-5">
                   {resultado.omitidas.map(({ f, motivo }) => <li key={f.n}>Fila {f.n} · {f.proveedor} · {f.nro ?? 'sin nº'} · {fmtARS(f.monto)} — {motivo}</li>)}
                 </ul>
               </div>
             )}
-            {!resultado.error && <p className="text-slate-400 text-xs mt-2">Las facturas cargadas ya figuran en rojo en la tabla y descuentan del gasto proyectado en el Cash Flow.</p>}
+            {!resultado.error && <p className="text-slate-400 text-xs mt-2">Las facturas cargadas ya figuran en rojo en la tabla y descuentan del gasto proyectado en el Cash Flow. Las que cambiaron de fecha ya están en su día nuevo.</p>}
           </div>
         )}
       </main>
@@ -303,8 +349,13 @@ export default function ImportarFacturas() {
       {confirmando && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center z-50 px-4">
           <div className="bg-white rounded-2xl shadow-[0_24px_60px_rgba(15,23,42,0.25)] w-full max-w-md p-6">
-            <h3 className="text-slate-900 font-extrabold text-base">¿Cargar {aImportar.length} factura{aImportar.length === 1 ? '' : 's'}?</h3>
-            <p className="text-slate-500 text-sm mt-2">Por <b className="text-slate-800">{fmtARS(montoAImportar)}</b>, como egresos proyectados en el Cash Flow. Se guardan todas juntas o ninguna.</p>
+            <h3 className="text-slate-900 font-extrabold text-base">
+              {aImportar.length > 0 && <>¿Cargar {aImportar.length} factura{aImportar.length === 1 ? '' : 's'}</>}
+              {aImportar.length > 0 && aActualizar.length > 0 && ' y '}
+              {aActualizar.length > 0 && <>{aImportar.length > 0 ? 'actualizar' : '¿Actualizar'} {aActualizar.length} fecha{aActualizar.length === 1 ? '' : 's'}</>}?
+            </h3>
+            {aImportar.length > 0 && <p className="text-slate-500 text-sm mt-2">Se cargan por <b className="text-slate-800">{fmtARS(montoAImportar)}</b>, como egresos proyectados en el Cash Flow. Se guardan todas juntas o ninguna.</p>}
+            {aActualizar.length > 0 && <p className="text-slate-500 text-sm mt-2">Las facturas que ya estaban cargadas cambian de fecha de pago y quedan como "Reprogramadas", con la fecha original guardada. No se duplican.</p>}
             <div className="flex gap-3 mt-5">
               <button onClick={importar} disabled={importando}
                 className="flex-1 text-white text-sm font-semibold py-2.5 rounded-xl disabled:opacity-60 inline-flex items-center justify-center gap-2"
@@ -339,7 +390,11 @@ function FilaTabla({ f, e, importable, marcada, onMarcar, aviso, abierto, onAbri
         <td className="px-4 py-3 whitespace-nowrap">{f.obraExcel || '—'}</td>
         <td className="px-4 py-3 whitespace-nowrap">{f.rubro ?? f.rubroExcel ?? '—'}</td>
         <td className="px-4 py-3 whitespace-nowrap">{f.periodo ? f.periodo.slice(0, 7) : '—'}</td>
-        <td className="px-4 py-3 whitespace-nowrap">{f.fechaPago ? fmtFecha(f.fechaPago) : '—'}</td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          {f.cambio
+            ? <><span className="text-slate-400 line-through mr-1">{fmtFecha(f.cambio.fechaAnterior)}</span>→ <b className="text-sky-700">{fmtFecha(f.cambio.fechaNueva)}</b></>
+            : (f.fechaPago ? fmtFecha(f.fechaPago) : '—')}
+        </td>
         <td className="px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap">{f.monto != null ? fmtARS(f.monto) : '—'}</td>
         <td className="px-4 py-3 text-xs">
           {hayDetalle

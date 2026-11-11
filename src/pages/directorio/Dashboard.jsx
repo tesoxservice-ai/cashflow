@@ -61,6 +61,7 @@ const BADGE_CAT = {
   reintegro_otros:     'bg-teal-50 text-teal-700',
   gasto_proyectado:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
   venta_proyectada:  'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
+  impuesto_venta_proyectado: 'bg-slate-50 text-slate-500 border border-dashed border-slate-300',
   otro:              'bg-slate-100 text-slate-600',
 }
 const LABEL_CAT = {
@@ -75,6 +76,7 @@ const LABEL_CAT = {
   reintegro_otros:     'Otros reintegros',
   gasto_proyectado:  'Gasto proyectado (presupuesto)',
   venta_proyectada:  'Venta proyectada (sin registrar)',
+  impuesto_venta_proyectado: 'Impuesto s/ cobro (proyectado)',
   otro:              'Otro',
 }
 const CATEGORIAS_FILTRO = [
@@ -90,6 +92,7 @@ const CATEGORIAS_FILTRO = [
   { value: 'reintegro_otros',     label: 'Otros reintegros' },
   { value: 'gasto_proyectado',  label: 'Gasto proyectado (presupuesto)' },
   { value: 'venta_proyectada',  label: 'Venta proyectada (sin registrar)' },
+  { value: 'impuesto_venta_proyectado', label: 'Impuesto s/ cobro (proyectado)' },
   { value: 'otro',              label: 'Otro' },
 ]
 
@@ -185,7 +188,7 @@ async function cargarDatosExportDirectorio() {
   // facturar) y "venta proyectada" (venta sin registrar) — ver src/lib/proyeccionPresupuesto.js.
   const movConProyeccion = combinarConProyeccion(movEnriq, presTodos ?? [], ventasProy ?? [], fechasEstGasto ?? [], fechasEstVenta ?? [], obrasData ?? [], rubrosData ?? [])
     .map(m => m._virtual
-      ? { ...m, obraCodigo: m.obras?.codigo ?? '', concepto: m.categoria === 'venta_proyectada' ? `Venta proyectada de ${labelPeriodo(m.periodo)}${m._conceptoManual ? ' — ' + m._conceptoManual : ''}` : `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar` }
+      ? { ...m, obraCodigo: m.obras?.codigo ?? '', concepto: m._impuestoVenta ? m.concepto : m.categoria === 'venta_proyectada' ? `Venta proyectada de ${labelPeriodo(m.periodo)}${m._conceptoManual ? ' — ' + m._conceptoManual : ''}` : `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar` }
       : m)
 
   const sumaSaldosBase = (saldosData ?? []).reduce((mapa, s) => {
@@ -1322,6 +1325,11 @@ function TabCashFlow() {
                               </span>
                             )}
                           </span>
+                        ) : m._impuestoVenta ? (
+                          <span className="italic font-normal text-slate-500">
+                            {m._impuestoEtiqueta} {Math.round(m._tasa * 10000) / 100}% s/ cobro
+                            <span className="block not-italic text-slate-400 text-[10px]">de {fmtARS(m._baseCobro)}{m._clienteVenta ? ` · ${m._clienteVenta}` : ''}</span>
+                          </span>
                         ) : (
                           m.proveedor_cliente ?? m.concepto ?? '—'
                         )}
@@ -1342,7 +1350,7 @@ function TabCashFlow() {
                       <td className="px-4 py-4 text-right whitespace-nowrap">
                         {m._virtual ? (
                           <span className="text-xs text-slate-400 italic">
-                            {m.categoria === 'venta_proyectada' ? 'Estimado — ventas Operaciones' : 'Estimado — presupuesto Operaciones'}
+                            {m.categoria === 'venta_proyectada' ? 'Estimado — ventas Operaciones' : m._impuestoVenta ? 'Calculado — impuestos del cobro' : 'Estimado — presupuesto Operaciones'}
                           </span>
                         ) : (
                           <button
