@@ -139,7 +139,10 @@ export function parsePeriodo(valor, fechaRef) {
   return `${anio}-${pad(mes)}-01`
 }
 
-// Rubros del Excel → rubros del sistema. Es el mismo criterio con el que ya se cargaron las facturas anteriores.
+// Rubros del Excel → rubros del sistema. ALQ SEG HYS OTROS GASTOS (alquileres, seguros, higiene y seguridad)
+// va a Otros Gastos Operativos, que es donde Operaciones lo define. Gastos Generales es el 13% de administración
+// de obra: no se factura, no viene en el Excel y no entra al Cash Flow (ver RUBROS_SIN_IMPACTO_EN_CASHFLOW).
+// Las facturas importadas antes de este cambio quedaron como Gastos Generales (ver sql/retag_alq_seg_hys_a_otros_gastos.sql).
 export const MAPA_RUBROS = {
   'SUBCONTRATO': 'Subcontratos',
   'SUBCONTRATOS': 'Subcontratos',
@@ -147,7 +150,7 @@ export const MAPA_RUBROS = {
   'VEHICULOS': 'Vehículos',
   'GASTOS OPERATIVOS': 'Otros Gastos Operativos',
   'EPP': 'Otros Gastos Operativos',
-  'ALQ SEG HYS OTROS GASTOS': 'Gastos Generales',
+  'ALQ SEG HYS OTROS GASTOS': 'Otros Gastos Operativos',
   'IMPUESTOS': 'Impuestos',
 }
 

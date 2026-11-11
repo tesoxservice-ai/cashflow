@@ -201,7 +201,7 @@ export default function ImportarFacturas() {
             <ul className="text-sm text-slate-500 space-y-1.5 list-disc pl-5">
               <li><b className="text-slate-700">Fecha de pago:</b> columna <i>cash flow</i>. <b className="text-slate-700">Período:</b> columna <i>Periodo Facturado</i>.</li>
               <li>Solo se importan las filas con <b className="text-slate-700">ESTADO PAGO = PENDIENTE</b>. Las marcadas <i>OK</i> o sin estado no se tocan.</li>
-              <li>Rubros: GASTOS OPERATIVOS y EPP → Otros Gastos Operativos · ALQ SEG HYS OTROS GASTOS → Gastos Generales · SUBCONTRATO, MATERIALES, VEHICULOS, IMPUESTOS → su rubro.</li>
+              <li>Rubros: GASTOS OPERATIVOS, EPP y ALQ SEG HYS OTROS GASTOS → Otros Gastos Operativos · SUBCONTRATO, MATERIALES, VEHICULOS, IMPUESTOS → su rubro.</li>
               <li>Se cargan como <b className="text-slate-700">egreso proyectado</b>, cuenta Galicia, igual que desde "Nuevo movimiento". Descuentan solas del gasto proyectado de Operaciones.</li>
               <li>Una factura es <b className="text-slate-700">duplicada</b> si coinciden proveedor + número de factura + obra + importe. Mismo importe con distinto número <b className="text-slate-700">no</b> lo es. Ante la duda queda en <span className="text-amber-700 font-semibold">Revisar</span>.</li>
             </ul>

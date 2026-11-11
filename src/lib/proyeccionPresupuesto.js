@@ -42,6 +42,20 @@
 // línea se factura entera desaparecen todas. Una división manual manda sobre la fecha única y sobre las divisiones
 // fijas de este archivo; "cerrar proyección" manda sobre todo.
 
+// Rubros que Operaciones puede presupuestar pero que NO generan gasto proyectado en el Cash Flow: no son un pago
+// futuro de proveedores sino un reparto interno (Gastos Generales = 13% de las ventas, administración de obra) o
+// plata que ya sale por otro lado (Impuestos). Se siguen cargando y se ven en Presupuesto vs Real; solo se
+// excluyen de la proyección de caja, y las facturas reales de esos rubros no se tocan.
+export const RUBROS_SIN_IMPACTO_EN_CASHFLOW = ['Gastos Generales', 'Impuestos']
+
+const normalizarNombre = s => String(s ?? '').trim().toLowerCase()
+
+export function presupuestosConImpacto(presupuestos, rubros) {
+  const excluidos = new Set(RUBROS_SIN_IMPACTO_EN_CASHFLOW.map(normalizarNombre))
+  const idsExcluidos = new Set((rubros ?? []).filter(r => excluidos.has(normalizarNombre(r.nombre))).map(r => r.id))
+  return idsExcluidos.size ? presupuestos.filter(p => !idsExcluidos.has(p.rubro_id)) : presupuestos
+}
+
 export function ultimoDiaPeriodo(periodo) {
   const [anio, mes] = periodo.split('-').map(Number)
   const ultimo = new Date(anio, mes, 0) // día 0 del mes siguiente = último día de "mes"
@@ -528,7 +542,7 @@ export function construirFilaVirtualVenta(proyectada, obras) {
 // de pago (a igualdad de fecha, los reales van antes que las proyecciones, y
 // después se desempata por id para que el orden sea estable).
 export function combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, hoy = new Date()) {
-  const gastosProyectados = calcularGastosProyectados(presupuestos, movimientos, fechasEstimadasGasto, obras, hoy)
+  const gastosProyectados = calcularGastosProyectados(presupuestosConImpacto(presupuestos, rubros), movimientos, fechasEstimadasGasto, obras, hoy)
   const ventasPendientes  = calcularVentasProyectadas(ventasProyectadas, movimientos, fechasEstimadasVenta, obras, hoy)
   const virtuales = [
     ...gastosProyectados.map(p => construirFilaVirtual(p, obras, rubros)),

@@ -1,7 +1,7 @@
 // Pruebas del gasto proyectado (reparto en miércoles y descuento por facturas). Correr con: npm test
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes } from './proyeccionPresupuesto.js'
+import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes, combinarConProyeccion, presupuestosConImpacto } from './proyeccionPresupuesto.js'
 
 const HOY = new Date(2026, 9, 30) // 30/10/2026
 const OBRAS = ['o1', 'o2', 'o3', 'o4', 'o5', 'o6', 'o7', 'o8'].map(id => ({ id }))
@@ -263,4 +263,33 @@ test('venta: la división manda sobre la fecha única; una parte vieja no afecta
     partes: [{ porcentaje: 50, fecha: '2026-09-15' }, { porcentaje: 50, fecha: '2026-11-16' }] }]
   const filas = calcularVentasProyectadas(ventas, [], fechas, OBRAS, HOY)
   assert.deepEqual(filas.map(f => [f.fechaPago, f.afectaCashflow]), [['2026-09-15', false], ['2026-11-16', true]])
+})
+
+// ─── Rubros que no entran al Cash Flow (Gastos Generales e Impuestos) ────────────────────────────
+
+const RUBROS_NOMBRES = [{ id: 'r1', nombre: 'Subcontratos' }, { id: 'rGG', nombre: 'Gastos Generales' }, { id: 'rImp', nombre: 'Impuestos' }, { id: 'rOGO', nombre: 'Otros Gastos Operativos' }]
+const presMix = [
+  { obra_id: 'o1', rubro_id: 'r1', periodo: '2026-10-01', monto: 100_000 },
+  { obra_id: 'o1', rubro_id: 'rGG', periodo: '2026-10-01', monto: 13_000 },
+  { obra_id: 'o1', rubro_id: 'rImp', periodo: '2026-10-01', monto: 7_000 },
+  { obra_id: 'o1', rubro_id: 'rOGO', periodo: '2026-10-01', monto: 5_000 },
+]
+const virtualesDeGasto = filas => filas.filter(f => f._virtual && f.categoria === 'gasto_proyectado')
+
+test('Gastos Generales e Impuestos se presupuestan pero no generan gasto proyectado en el Cash Flow', () => {
+  const filas = virtualesDeGasto(combinarConProyeccion([], presMix, [], [], [], OBRAS, RUBROS_NOMBRES, HOY))
+  assert.deepEqual(filas.map(f => f.rubro_id).sort(), ['r1', 'rOGO'])
+  assert.equal(filas.reduce((s, f) => s + f.montoEfectivo, 0), 105_000)
+})
+
+test('sin lista de rubros no se excluye nada, y el nombre no distingue mayúsculas ni espacios', () => {
+  assert.equal(presupuestosConImpacto(presMix, []).length, 4)
+  assert.equal(presupuestosConImpacto(presMix, [{ id: 'rGG', nombre: ' gastos generales ' }]).length, 3)
+})
+
+test('las facturas reales de Gastos Generales siguen en el Cash Flow aunque el presupuesto no proyecte', () => {
+  const factura = { id: 'f1', categoria: 'factura', tipo: 'egreso', obra_id: 'o1', rubro_id: 'rGG', periodo: '2026-10-01', monto_bruto: 9_000, montoEfectivo: 9_000, fecha_pago: '2026-11-18', estado: 'proyectado', estado_proyeccion: 'normal' }
+  const todo = combinarConProyeccion([factura], presMix, [], [], [], OBRAS, RUBROS_NOMBRES, HOY)
+  assert.ok(todo.some(m => m.id === 'f1'))
+  assert.equal(virtualesDeGasto(todo).some(f => f.rubro_id === 'rGG'), false)
 })

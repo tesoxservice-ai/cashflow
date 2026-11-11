@@ -225,3 +225,8 @@ test('"MENOS NC xxx" en el proveedor pasa a observaciones y no ensucia el nombre
   assert.equal(f.proveedor, 'SWISS MEDICAL')
   assert.equal(f.observaciones, 'Menos NC 1020-918052')
 })
+
+test('ALQ SEG HYS OTROS GASTOS se importa como Otros Gastos Operativos (Gastos Generales no se factura)', () => {
+  const [f] = analizar(fila('ALQUILERES SA', '1-100', 'ALQ SEG HYS OTROS GASTOS', 'OCTUBRE', '1/10/26', '$100,000.00', 'PENDIENTE', 'TRF', 'Aprobada', '4/11/26', '678'))
+  assert.equal(f.rubro, 'Otros Gastos Operativos')
+})
