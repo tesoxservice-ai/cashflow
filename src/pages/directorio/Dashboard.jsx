@@ -11,6 +11,7 @@ import { supabase } from '../../supabaseClient'
 import { traerTodo } from '../../lib/traerTodo'
 import { useAuth } from '../../context/AuthContext'
 import GraficoCashflow from './GraficoCashflow'
+import HistorialProyecciones from '../../components/HistorialProyecciones'
 import { BarraEscenarios, PanelFecha, AlertasEscenario } from './PanelEscenarios'
 import { useEscenarios, useFimaDatos, construirBase, simular, opcionesMetrica, serieMetrica, COLORES_ESCENARIO } from './escenarios'
 import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
@@ -677,7 +678,7 @@ function TopNav({ perfil }) {
 
 export default function DashboardDirectorio() {
   const { perfil } = useAuth()
-  const [tab, setTab] = useState('cashflow') // 'cashflow' | 'presupuesto'
+  const [tab, setTab] = useState('cashflow') // 'cashflow' | 'presupuesto' | 'historial'
   const [exportando, setExportando] = useState(false)
   const [errorExport, setErrorExport] = useState('')
 
@@ -727,9 +728,10 @@ export default function DashboardDirectorio() {
         <div className="flex items-center gap-1 mb-6 border-b border-slate-200">
           <TabButton activo={tab === 'cashflow'} onClick={() => setTab('cashflow')}>Cash Flow</TabButton>
           <TabButton activo={tab === 'presupuesto'} onClick={() => setTab('presupuesto')}>Presupuesto vs. Real</TabButton>
+          <TabButton activo={tab === 'historial'} onClick={() => setTab('historial')}>Historial de proyecciones</TabButton>
         </div>
 
-        {tab === 'cashflow' ? <TabCashFlow /> : <TabPresupuesto />}
+        {tab === 'cashflow' ? <TabCashFlow /> : tab === 'presupuesto' ? <TabPresupuesto /> : <HistorialProyecciones />}
       </main>
     </div>
   )

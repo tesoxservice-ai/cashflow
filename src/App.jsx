@@ -16,16 +16,23 @@ import VentasProyectadasFin         from './pages/finanzas/VentasProyectadas'
 import Fima                         from './pages/finanzas/Fima'
 import Historial                    from './pages/finanzas/Historial'
 import ImportarFacturas             from './pages/finanzas/ImportarFacturas'
+import HistorialProyeccionesPagina  from './pages/finanzas/HistorialProyeccionesPagina'
 import MargenPorObra                from './pages/MargenPorObra'
 import DashboardDirectorio          from './pages/directorio/Dashboard'
 import ProtectedRoute               from './components/ProtectedRoute'
 import { useAuth }                  from './context/AuthContext'
-import { puedeEditarPresupuestosEnFinanzas, puedeImportarFacturas } from './lib/permisos'
+import { puedeEditarPresupuestosEnFinanzas, puedeImportarFacturas, puedeGuardarSnapshots } from './lib/permisos'
 
 // Importar facturas: solo Santiago.
 function SoloImportadorFacturas({ children }) {
   const { user } = useAuth()
   return puedeImportarFacturas(user) ? children : <Navigate to="/finanzas" replace />
+}
+
+// Historial de proyecciones dentro de Finanzas: solo Santiago (el Directorio lo ve en su panel).
+function SoloFotosProyeccion({ children }) {
+  const { user, perfil } = useAuth()
+  return puedeGuardarSnapshots(user, perfil) ? children : <Navigate to="/finanzas" replace />
 }
 
 // Presupuestos dentro de Finanzas: solo quien tiene el permiso puntual (Santiago). El resto vuelve al inicio.
@@ -78,6 +85,9 @@ export default function App() {
       } />
       <Route path="/finanzas/importar-facturas" element={
         <ProtectedRoute rolRequerido="finanzas"><SoloImportadorFacturas><ImportarFacturas /></SoloImportadorFacturas></ProtectedRoute>
+      } />
+      <Route path="/finanzas/historial-proyecciones" element={
+        <ProtectedRoute rolRequerido="finanzas"><SoloFotosProyeccion><HistorialProyeccionesPagina /></SoloFotosProyeccion></ProtectedRoute>
       } />
       <Route path="/finanzas/ventas" element={
         <ProtectedRoute rolRequerido="finanzas"><VentasProyectadasFin /></ProtectedRoute>

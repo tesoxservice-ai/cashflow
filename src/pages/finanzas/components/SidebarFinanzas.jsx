@@ -8,7 +8,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../../context/AuthContext'
-import { puedeEditarPresupuestosEnFinanzas, puedeImportarFacturas } from '../../../lib/permisos'
+import { puedeEditarPresupuestosEnFinanzas, puedeImportarFacturas, puedeGuardarSnapshots } from '../../../lib/permisos'
 
 // Espacio que deja la barra lateral: a la izquierda en escritorio y arriba en celular.
 export const CLASE_SIDEBAR = 'lg:pl-[232px] pt-14 lg:pt-0'
@@ -30,6 +30,7 @@ const ICONOS = {
   margen: 'M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941M3 3v18h18',
   fima: 'M12 6v12m-4-9h5.5a2.5 2.5 0 010 5H10a2.5 2.5 0 000 5h6',
   historial: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z',
+  proyecciones: 'M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316zM16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z',
   salir: 'M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75',
   menu: 'M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5',
   cerrar: 'M6 18L18 6M6 6l12 12',
@@ -74,7 +75,7 @@ function Item({ item, activo, onIr }) {
   )
 }
 
-function Contenido({ perfil, activo, onIr, onLogout, puedeEditarPresupuestos, puedeImportar }) {
+function Contenido({ perfil, activo, onIr, onLogout, puedeEditarPresupuestos, puedeImportar, puedeFotos }) {
   // "Presupuestos" (alta y edición) e "Importar facturas" los ve solo quien tiene el permiso
   const secciones = SECCIONES.map(sec => sec.titulo !== 'Gestión' ? sec : {
     ...sec,
@@ -84,6 +85,10 @@ function Contenido({ perfil, activo, onIr, onLogout, puedeEditarPresupuestos, pu
       ...(puedeImportar ? [{ id: 'importar', label: 'Importar facturas', ruta: '/finanzas/importar-facturas' }] : []),
     ],
   })
+  // "Historial de proyecciones" (fotos): solo Santiago
+  const todas = puedeFotos
+    ? secciones.map(sec => sec.titulo !== 'Control' ? sec : { ...sec, items: [...sec.items, { id: 'proyecciones', label: 'Fotos de proyección', ruta: '/finanzas/historial-proyecciones' }] })
+    : secciones
   const iniciales = perfil ? `${perfil.nombre?.[0] ?? ''}${perfil.apellido?.[0] ?? ''}` : 'U'
   return (
     <div className="flex flex-col h-full">
@@ -92,7 +97,7 @@ function Contenido({ perfil, activo, onIr, onLogout, puedeEditarPresupuestos, pu
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 pt-4 pb-4 space-y-5">
-        {secciones.map(sec => (
+        {todas.map(sec => (
           <div key={sec.titulo}>
             <p className="px-2.5 mb-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">{sec.titulo}</p>
             <div className="space-y-0.5">
@@ -128,6 +133,7 @@ export default function SidebarFinanzas({ perfil, activo = 'inicio' }) {
   const { logout, user } = useAuth()
   const puedeEditarPresupuestos = puedeEditarPresupuestosEnFinanzas(user)
   const puedeImportar = puedeImportarFacturas(user)
+  const puedeFotos = puedeGuardarSnapshots(user, perfil)
   const navigate = useNavigate()
   const [abierto, setAbierto] = useState(false)
   const ir = ruta => { setAbierto(false); navigate(ruta) }
@@ -137,7 +143,7 @@ export default function SidebarFinanzas({ perfil, activo = 'inicio' }) {
       {/* Escritorio: fija a la izquierda */}
       <aside className="hidden lg:block fixed inset-y-0 left-0 w-[232px] bg-white border-r border-slate-100
                         shadow-[8px_0_32px_rgba(15,23,42,0.04)] z-30">
-        <Contenido perfil={perfil} activo={activo} onIr={ir} onLogout={logout} puedeEditarPresupuestos={puedeEditarPresupuestos} puedeImportar={puedeImportar} />
+        <Contenido perfil={perfil} activo={activo} onIr={ir} onLogout={logout} puedeEditarPresupuestos={puedeEditarPresupuestos} puedeImportar={puedeImportar} puedeFotos={puedeFotos} />
       </aside>
 
       {/* Celular: barra superior + menú desplegable */}
@@ -154,7 +160,7 @@ export default function SidebarFinanzas({ perfil, activo = 'inicio' }) {
             <button onClick={() => setAbierto(false)} className="absolute top-4 right-3 w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-50 z-10">
               <Ico d={ICONOS.cerrar} />
             </button>
-            <Contenido perfil={perfil} activo={activo} onIr={ir} onLogout={logout} puedeEditarPresupuestos={puedeEditarPresupuestos} puedeImportar={puedeImportar} />
+            <Contenido perfil={perfil} activo={activo} onIr={ir} onLogout={logout} puedeEditarPresupuestos={puedeEditarPresupuestos} puedeImportar={puedeImportar} puedeFotos={puedeFotos} />
           </aside>
         </div>
       )}

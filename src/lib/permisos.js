@@ -14,3 +14,8 @@ export const puedeEditarPresupuestosEnFinanzas = user =>
 // Importar facturas pegadas desde el Excel: también exclusivo de Santiago Verdinelli.
 // (La herramienta guarda por la misma vía que "Nuevo movimiento"; esto decide quién la ve y la puede abrir.)
 export const puedeImportarFacturas = user => puedeEditarPresupuestosEnFinanzas(user)
+
+// Historial de proyecciones ("fotos"): guardar y comparar. Solo el rol Directorio y Santiago Verdinelli.
+// La restricción real contra la base está en sql/snapshots_proyeccion.sql.
+export const puedeGuardarSnapshots = (user, perfil) =>
+  perfil?.rol === 'directorio' || puedeEditarPresupuestosEnFinanzas(user)
