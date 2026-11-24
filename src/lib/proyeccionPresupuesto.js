@@ -187,6 +187,129 @@ const DIVIDIR_EN_MIERCOLES = new Map([
   ['70be9f6d-fc01-423a-a978-24ec9f8cbe27|9a94f4be-7ea9-49a3-ad21-823e72dedaab|2026-10-01', 1],
 ])
 
+// ─── Nivelación diaria del gasto proyectado ──────────────────────────────────
+// Lo que se paga por día lo decide Finanzas, no el presupuesto: ≈ topeMiercoles cada miércoles y ≈ topeOtroDia cada
+// lunes, martes, jueves y viernes (nunca sábado ni domingo). TODO el gasto proyectado respeta ese tope, también lo que
+// Finanzas puso a mano (fecha, división en partes o "mover"): esa fecha vale como "no antes de este día".
+//   1. Las facturas ya cargadas no se mueven (son pagos reales con su fecha) y ocupan lugar en su día.
+//   2. Primero se acomoda lo que Finanzas puso a mano, desde su fecha. Después, lo automático: cada línea
+//      (obra + rubro + período) desde el mes siguiente al período (pago a 30 días), de los períodos más viejos a los nuevos.
+//   3. Cada pieza va al primer día con lugar desde su fecha. Si un día se llena, lo que sobra pasa al siguiente día
+//      con lugar, y así en cadena. El total proyectado no cambia, solo cuándo sale.
+//   4. Una línea más grande que un miércoles se parte en miércoles. Una parte armada a mano no se parte más.
+// `activa: false` vuelve al reparto anterior (cada línea entera en un miércoles y 55% / 45% miércoles / jueves).
+export const NIVELACION_DIARIA = {
+  activa: true,
+  topeMiercoles: 60_000_000,
+  topeOtroDia: 8_000_000,
+}
+
+const aCentavos = n => Math.round(n * 100)
+const fechaDeISO = iso => { const [a, m, d] = iso.split('-').map(Number); return new Date(a, m - 1, d) }
+
+// piezas = [{ tipo: 'linea', prioritaria, desde, obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado }
+//           { tipo: 'fila', prioritaria: true, desde, fila }]   (desde = 'AAAA-MM-DD' o null = mes siguiente al período)
+// cargaFija = { 'AAAA-MM-DD': monto } con las facturas ya cargadas.
+// Devuelve las filas ya con fecha; una línea muy grande (más que el tope de un miércoles) se parte en varios miércoles.
+function nivelarGasto(piezas, cargaFija, hoy, cfg = NIVELACION_DIARIA) {
+  const restante = new Map() // 'AAAA-MM-DD' -> centavos que todavía caben ese día
+  const tocado = new Set()   // días en los que ya se puso algo
+  const cupoDe = d => {
+    const f = isoLocalDe(d)
+    if (!restante.has(f)) {
+      const dia = d.getDay()
+      const tope = dia === 3 ? cfg.topeMiercoles : (dia >= 1 && dia <= 5 ? cfg.topeOtroDia : 0)
+      restante.set(f, Math.max(0, aCentavos(tope) - aCentavos(cargaFija[f] ?? 0)))
+    }
+    return f
+  }
+  const poner = (f, centavos) => { restante.set(f, Math.max(0, restante.get(f) - centavos)); tocado.add(f) }
+  const manana = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1)
+  const MAX_DIAS = 540
+  const datos = p => (p.tipo === 'fila' ? p.fila : p)
+  const desdeDe = p => {
+    let d
+    if (p.desde) d = fechaDeISO(p.desde)
+    else { const [anio, mes] = datos(p).periodo.split('-').map(Number); d = new Date(anio, mes, 1) } // día 1 del mes siguiente
+    return d > manana ? d : manana
+  }
+  const claveLinea = p => `${datos(p).obra_id}|${datos(p).rubro_id}`
+  const ordenadas = piezas.map(p => ({ p, desde: desdeDe(p) })).sort((a, b) =>
+    (b.p.prioritaria ? 1 : 0) - (a.p.prioritaria ? 1 : 0) ||
+    a.desde - b.desde ||
+    datos(a.p).periodo.localeCompare(datos(b.p).periodo) ||
+    datos(b.p).presupuestado - datos(a.p).presupuestado ||
+    hashEstable(claveLinea(a.p)) - hashEstable(claveLinea(b.p)) ||
+    claveLinea(a.p).localeCompare(claveLinea(b.p)) ||
+    (datos(a.p).parte ?? 0) - (datos(b.p).parte ?? 0))
+  const filas = []
+  ordenadas.forEach(({ p, desde }) => {
+    const diaDesde = i => new Date(desde.getFullYear(), desde.getMonth(), desde.getDate() + i)
+
+    if (p.tipo === 'fila') {
+      // Parte armada a mano: entera, en el primer día con lugar para toda la parte.
+      const total = aCentavos(p.fila.saldoProyectado)
+      let fecha = null
+      for (let i = 0; i < MAX_DIAS && !fecha; i++) {
+        const f = cupoDe(diaDesde(i))
+        if (restante.get(f) >= total) { fecha = f; poner(f, total) }
+      }
+      for (let i = 0; i < MAX_DIAS && !fecha; i++) { // más grande que un día entero: el primer miércoles que no se usó
+        const d = diaDesde(i)
+        if (d.getDay() !== 3) continue
+        const f = cupoDe(d)
+        if (!tocado.has(f)) { fecha = f; poner(f, total) }
+      }
+      filas.push({ ...p.fila, fechaPago: fecha ?? isoLocalDe(diaDesde(MAX_DIAS)) })
+      return
+    }
+
+    const total = aCentavos(p.saldoProyectado)
+    const trozos = [] // [{ fecha, centavos }]
+    if (total <= aCentavos(cfg.topeMiercoles)) {
+      // Entera, en el primer día que tenga lugar para toda la línea.
+      for (let i = 0; i < MAX_DIAS && !trozos.length; i++) {
+        const f = cupoDe(diaDesde(i))
+        if (restante.get(f) >= total) { poner(f, total); trozos.push({ fecha: f, centavos: total }) }
+      }
+    } else {
+      // Más grande que un miércoles entero: se parte en los miércoles siguientes (así no quedan decenas de filas
+      // chicas en los otros días), sin dejar partes de menos de $ 1 M.
+      let falta = total
+      for (let i = 0; i < MAX_DIAS && falta > 0; i++) {
+        const d = diaDesde(i)
+        if (d.getDay() !== 3) continue
+        const f = cupoDe(d)
+        const lugar = restante.get(f)
+        if (lugar <= 0 || (lugar < 100_000_000 && lugar < falta)) continue
+        const toma = Math.min(lugar, falta)
+        poner(f, toma); falta -= toma; trozos.push({ fecha: f, centavos: toma })
+      }
+    }
+    if (!trozos.reduce((s, t) => s + t.centavos, 0)) {
+      // Sin lugar en todo el horizonte (no debería pasar): queda entera en el último día revisado, sin perder plata.
+      trozos.length = 0
+      trozos.push({ fecha: isoLocalDe(diaDesde(MAX_DIAS)), centavos: total })
+    } else {
+      const resto = total - trozos.reduce((s, t) => s + t.centavos, 0)
+      if (resto > 0) trozos[trozos.length - 1].centavos += resto
+    }
+    const n = trozos.length
+    const porcentajes = trozos.map((t, i) => (i === n - 1
+      ? 100 - trozos.slice(0, -1).reduce((s, x) => s + Math.round(x.centavos / total * 10000) / 100, 0)
+      : Math.round(t.centavos / total * 10000) / 100))
+    const division = n > 1 ? trozos.map((t, i) => ({ porcentaje: Math.round(porcentajes[i] * 100) / 100, fecha: t.fecha })) : null
+    trozos.forEach((t, i) => {
+      filas.push({
+        obra_id: p.obra_id, rubro_id: p.rubro_id, periodo: p.periodo, presupuestado: p.presupuestado, gastoReal: p.gastoReal,
+        saldoProyectado: t.centavos / 100, fechaPago: t.fecha,
+        ...(n > 1 ? { parte: i + 1, partes: n, porcentaje: division[i].porcentaje, division, repartoSemanal: true } : {}),
+      })
+    })
+  })
+  return filas
+}
+
 // Mes siguiente a un período "AAAA-MM-01" (para sumar el primer miércoles del mes que sigue al de pago).
 function periodoSiguiente(periodo) {
   const [anio, mes] = periodo.split('-').map(Number)
@@ -378,6 +501,12 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
   const proximoMiercoles = proximoMiercolesDespuesDe(hoy)
 
   const resultado = []
+  const piezas = [] // lo que se acomoda día por día con la nivelación (ver nivelarGasto)
+  // Con la nivelación activa, una parte armada a mano entra a la cola con su fecha como "no antes de"; si no, queda como está.
+  const empujarFila = (fila, desde) => {
+    if (NIVELACION_DIARIA.activa && pagaA30Dias(fila.periodo)) piezas.push({ tipo: 'fila', prioritaria: true, desde, fila })
+    else resultado.push(fila)
+  }
   Object.entries(presPorClave).forEach(([k, presupuestado]) => {
     if (cerradoPorClave[k]) return // Finanzas revisó y cerró esta proyección a mano
     const gastoReal = gastoPorClave[k] ?? 0
@@ -390,8 +519,8 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
       const partes = partesPorClave[k]
       const montos = dividirPorPorcentajes(saldoProyectado, partes)
       partes.forEach((p, i) => {
-        resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i],
-          fechaPago: p.fecha, parte: i + 1, partes: partes.length, porcentaje: p.porcentaje, division: partes, divisionManual: true })
+        empujarFila({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i],
+          fechaPago: p.fecha, parte: i + 1, partes: partes.length, porcentaje: p.porcentaje, division: partes, divisionManual: true }, p.fecha)
       })
       return
     }
@@ -407,10 +536,16 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
       // Igual que el resto: una parte nunca queda en el pasado (se corre al próximo miércoles).
       const fechasParte = fechas.map(f => (f <= hoyISO ? proximoMiercoles : f))
       fechas.forEach((f, i) => {
-        resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i],
+        empujarFila({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado: montos[i],
           fechaPago: fechasParte[i], parte: i + 1, partes: fechas.length, porcentaje: porcentajes[i],
-          division: fechasParte.map((fp, j) => ({ porcentaje: porcentajes[j], fecha: fp })) })
+          division: fechasParte.map((fp, j) => ({ porcentaje: porcentajes[j], fecha: fp })) }, fechasParte[i])
       })
+      return
+    }
+    if (NIVELACION_DIARIA.activa && pagaA30Dias(periodo)) {
+      // Fecha puesta por Finanzas: entra con prioridad y "no antes de" ese día. Sin fecha: línea automática, desde el
+      // mes siguiente al período. La fecha final se define al terminar, acomodando todo junto contra el tope de cada día.
+      piezas.push({ tipo: 'linea', prioritaria: !!fechaPago, desde: fechaPago ?? null, obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado })
       return
     }
     if (!fechaPago) {
@@ -434,6 +569,17 @@ export function calcularGastosProyectados(presupuestos, movimientos, fechasEstim
     }
     resultado.push({ obra_id, rubro_id, periodo, presupuestado, gastoReal, saldoProyectado, fechaPago })
   })
+  if (piezas.length) {
+    // Lo que ya está fijo cada día: las facturas cargadas (pagos reales, no se mueven).
+    const cargaDiaria = {}
+    const sumarDia = (fecha, monto) => { cargaDiaria[fecha] = (cargaDiaria[fecha] ?? 0) + monto }
+    movimientos.forEach(m => {
+      if (m.tipo !== 'egreso' || m.categoria !== 'factura' || m.estado_proyeccion === 'no_cumple' || !m.fecha_pago) return
+      sumarDia(m.fecha_pago, Number(m.estado === 'ejecutado' ? (m.monto_neto ?? m.monto_bruto) : m.monto_bruto) || 0)
+    })
+    resultado.forEach(r => sumarDia(r.fechaPago, r.saldoProyectado)) // filas que no entran a la nivelación
+    resultado.push(...nivelarGasto(piezas, cargaDiaria, hoy))
+  }
   return resultado
 }
 

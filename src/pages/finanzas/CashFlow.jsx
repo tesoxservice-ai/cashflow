@@ -11,8 +11,12 @@ import SidebarFinanzas, { CLASE_SIDEBAR } from './components/SidebarFinanzas'
 import FormularioMovimiento from './components/FormularioMovimiento'
 import SeccionDebitos from './components/SeccionDebitos'
 import ModalNotas from './components/ModalNotas'
-import { combinarConProyeccion, dividirPorPorcentajes, indexarRegistrado, desgloseDeLinea } from '../../lib/proyeccionPresupuesto'
+import { combinarConProyeccion, dividirPorPorcentajes, indexarRegistrado, desgloseDeLinea, NIVELACION_DIARIA } from '../../lib/proyeccionPresupuesto'
 import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium } from '../directorio/utilsDirectorio'
+import { puedeEditarPresupuestosEnFinanzas } from '../../lib/permisos'
+
+// Una línea de gasto proyectado (obra + rubro + período) puede tener varias filas (partes): todas comparten esta clave.
+const claveDeLinea = m => `${m._claveFecha.obra_id}|${m._claveFecha.rubro_id}|${m._claveFecha.periodo}`
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -293,6 +297,14 @@ export default function CashFlow() {
   const [mostrarFormMov, setMostrarFormMov] = useState(false)
   const [modalNotas,     setModalNotas]     = useState(null)
   const [mostrarDebitos, setMostrarDebitos] = useState(false)
+
+  // Mover varios gastos proyectados juntos a otra fecha: solo Santiago Verdinelli (decide qué se ve en pantalla).
+  const puedeMoverGastos = puedeEditarPresupuestosEnFinanzas(user)
+  const [seleccionMover,    setSeleccionMover]    = useState(() => new Set()) // claves obra|rubro|período
+  const [fechaDestinoMover, setFechaDestinoMover] = useState('')
+  const [fechaOrigenMover,  setFechaOrigenMover]  = useState('')
+  const [moviendoGastos,    setMoviendoGastos]    = useState(false)
+  const [errorMover,        setErrorMover]        = useState('')
 
   const [filaEditandoFecha,  setFilaEditandoFecha]  = useState(null)
   const [nuevaFechaEstimada, setNuevaFechaEstimada]  = useState('')
@@ -839,6 +851,101 @@ export default function CashFlow() {
     else await cargarFechasEstimadasGasto()
   }
 
+  // ─── Mover varios gastos proyectados juntos (solo Santiago) ───────────────────
+  // Cada línea movida queda con fecha puesta a mano en ese día (igual que "Editar fecha"). Después, el resto
+  // del gasto proyectado automático de ese día se reacomoda solo (ver nivelarGastoAutomatico) para que el día
+  // no pase del tope. No toca presupuestos ni facturas.
+  const gastosProyectadosMovibles = useMemo(
+    () => movimientosCombinados.filter(m => m._virtual && m.categoria === 'gasto_proyectado' && m._claveFecha),
+    [movimientosCombinados]
+  )
+  // La selección es por FILA (cada parte de una línea partida se elige por separado): solo se mueve lo que se tilda.
+  const resumenSeleccionMover = useMemo(() => {
+    const filas = gastosProyectadosMovibles.filter(m => seleccionMover.has(m.id))
+    return { lineas: filas.length, monto: filas.reduce((s, m) => s + m.montoEfectivo, 0) }
+  }, [gastosProyectadosMovibles, seleccionMover])
+
+  // Atajos de la barra: los próximos 5 miércoles (los días de pago), a partir de mañana.
+  const proximosMiercoles = useMemo(() => {
+    const h = new Date()
+    const d = new Date(h.getFullYear(), h.getMonth(), h.getDate() + 1)
+    while (d.getDay() !== 3) d.setDate(d.getDate() + 1)
+    return Array.from({ length: 5 }, (_, i) => {
+      const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7 * i)
+      return { iso: `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`, etiqueta: `${x.getDate()}/${x.getMonth() + 1}` }
+    })
+  }, [])
+
+  const alternarSeleccionMover = id => setSeleccionMover(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
+  })
+
+  function handleElegirDelDia() {
+    setErrorMover('')
+    if (!fechaOrigenMover) { setErrorMover('Elegí el día del que querés mover los gastos.'); return }
+    const ids = gastosProyectadosMovibles.filter(m => m.fecha_pago === fechaOrigenMover).map(m => m.id)
+    if (ids.length === 0) { setErrorMover('Ese día no tiene gasto proyectado.'); return }
+    setSeleccionMover(prev => new Set([...prev, ...ids]))
+  }
+
+  async function handleMoverGastos() {
+    setErrorMover('')
+    if (seleccionMover.size === 0) { setErrorMover('Elegí al menos un gasto proyectado.'); return }
+    if (!fechaDestinoMover) { setErrorMover('Elegí la fecha a la que se mueven.'); return }
+    const h = new Date()
+    const hoyISO = `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-${String(h.getDate()).padStart(2, '0')}`
+    if (fechaDestinoMover <= hoyISO) { setErrorMover('La fecha tiene que ser posterior a hoy.'); return }
+
+    // Se agrupan las filas elegidas por línea (obra + rubro + período).
+    const porLinea = new Map()
+    gastosProyectadosMovibles.forEach(m => {
+      if (!seleccionMover.has(m.id)) return
+      const k = claveDeLinea(m)
+      if (!porLinea.has(k)) porLinea.set(k, [])
+      porLinea.get(k).push(m)
+    })
+    let lineasSinMover = 0 // por si alguna línea no se puede mover: se avisa, nunca se saltea en silencio
+    const conDivision = [] // líneas partidas de las que solo se mueven algunas partes
+    const sinDivision = [] // líneas enteras (sin partir, o con todas sus partes elegidas)
+    porLinea.forEach((elegidas, k) => {
+      const todas = gastosProyectadosMovibles.filter(m => claveDeLinea(m) === k)
+      const clave = elegidas[0]._claveFecha
+      if (todas.length === elegidas.length) {
+        // Se movió todo lo que tiene la línea: queda con una sola fecha (si estaba dividida a mano, se junta).
+        const fila = { ...clave, fecha_estimada: fechaDestinoMover }
+        if (todas.some(m => m._divisionManual)) conDivision.push({ ...fila, partes: null }); else sinDivision.push(fila)
+        return
+      }
+      // Solo algunas partes: cada parte conserva su porcentaje y su fecha, salvo las elegidas, que van a la fecha nueva.
+      const division = todas[0]._division
+      if (!Array.isArray(division) || division.length < 2) { lineasSinMover += 1; return }
+      const idsElegidos = new Set(elegidas.map(m => m._parte))
+      const partes = division.map((p, i) => ({
+        porcentaje: Number(p.porcentaje),
+        fecha: idsElegidos.has(i + 1) ? fechaDestinoMover : p.fecha,
+      }))
+      const suma = partes.slice(0, -1).reduce((s, p) => s + p.porcentaje, 0)
+      partes[partes.length - 1].porcentaje = Math.round((100 - suma) * 100) / 100
+      conDivision.push({ ...clave, fecha_estimada: null, partes })
+    })
+
+    if (lineasSinMover > 0) { setErrorMover(`${lineasSinMover} línea(s) no se pudieron mover porque les falta la división. No se movió nada.`); return }
+    if (sinDivision.length + conDivision.length === 0) { setErrorMover('No había nada para mover.'); return }
+
+    setMoviendoGastos(true)
+    let error = null
+    for (const grupo of [sinDivision, conDivision]) {
+      if (!grupo.length || error) continue
+      ;({ error } = await supabase.from('gasto_proyectado_fecha_estimada').upsert(grupo, { onConflict: 'obra_id,rubro_id,periodo' }))
+    }
+    setMoviendoGastos(false)
+    if (error) { setErrorMover('No se pudieron mover los gastos. Revisá la conexión y probá de nuevo.'); return }
+
+    setSeleccionMover(new Set())
+    setFechaDestinoMover('')
+    await cargarFechasEstimadasGasto()
+  }
+
   const selCls = `w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
     transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400`
   const lbCls = 'block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5'
@@ -1020,7 +1127,29 @@ export default function CashFlow() {
           </div>
         ) : (
           <>
+            {puedeMoverGastos && (
+              // Arriba queda una sola línea chica; el botón de mover está en la barra que flota abajo (ver más abajo).
+              <div className={`${CARD} px-4 py-2.5 mb-4 flex flex-wrap items-center gap-x-4 gap-y-2`}>
+                <p className="text-sm font-bold text-slate-900"
+                  title={`Tildá gastos proyectados en la tabla y movelos con la barra de abajo. Topes: ${fmtARS(NIVELACION_DIARIA.topeMiercoles)} los miércoles y ${fmtARS(NIVELACION_DIARIA.topeOtroDia)} los otros días. Lo que movés tiene prioridad sobre lo automático; si el día se llena, lo que sobra pasa solo al siguiente día con lugar. Las facturas no se mueven.`}>
+                  Mover gastos proyectados
+                </p>
+                <p className="text-xs text-slate-400">Tildá los gastos en la tabla. La barra para moverlos aparece abajo.</p>
+                <div className="flex items-center gap-2 ml-auto">
+                  <span className="text-xs font-semibold text-slate-500">Elegir todos los del día</span>
+                  <input type="date" value={fechaOrigenMover} onChange={e => setFechaOrigenMover(e.target.value)}
+                    className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/25" />
+                  <button onClick={handleElegirDelDia}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                    Elegir
+                  </button>
+                </div>
+                {errorMover && resumenSeleccionMover.lineas === 0 && <p className="basis-full text-xs text-red-600 font-semibold">{errorMover}</p>}
+              </div>
+            )}
             <TablaCashFlow
+              seleccionMover={puedeMoverGastos ? seleccionMover : null}
+              onAlternarSeleccionMover={alternarSeleccionMover}
               filas={filasFiltradas}
               saldoInicial={saldoInicial}
               obras={obras}
@@ -1120,6 +1249,49 @@ export default function CashFlow() {
         </div>
       </main>
 
+      {/* Barra flotante para mover los gastos tildados: queda siempre a la vista, sin tener que subir. Solo Santiago. */}
+      {puedeMoverGastos && resumenSeleccionMover.lineas > 0 && (
+        <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4 pointer-events-none">
+          <div className="pointer-events-auto max-w-full rounded-2xl bg-white border border-slate-200 px-4 py-3
+                          shadow-[0_10px_40px_rgba(15,23,42,0.22)]">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-900 tabular-nums">
+                  {resumenSeleccionMover.lineas} {resumenSeleccionMover.lineas === 1 ? 'gasto elegido' : 'gastos elegidos'}
+                  <span className="text-slate-500 font-semibold"> · {fmtARS(resumenSeleccionMover.monto)}</span>
+                </p>
+                <p className="text-[11px] text-slate-400">Si una línea está en partes, solo se mueven las que tildaste.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-semibold text-slate-500 mr-1">Mover a</span>
+                {proximosMiercoles.map(w => (
+                  <button key={w.iso} onClick={() => { setFechaDestinoMover(w.iso); setErrorMover('') }}
+                    className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-colors
+                      ${fechaDestinoMover === w.iso ? 'bg-cyan-700 text-white border-cyan-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                    title={`Miércoles ${w.etiqueta}`}>
+                    Mié {w.etiqueta}
+                  </button>
+                ))}
+                <input type="date" value={fechaDestinoMover} onChange={e => { setFechaDestinoMover(e.target.value); setErrorMover('') }}
+                  className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/25" />
+              </div>
+              <div className="flex items-center gap-2 ml-auto">
+                <button onClick={() => { setSeleccionMover(new Set()); setErrorMover('') }}
+                  className="text-xs font-semibold text-slate-500 hover:text-slate-800 px-2 py-2">
+                  Limpiar
+                </button>
+                <button onClick={handleMoverGastos} disabled={moviendoGastos}
+                  className="text-sm font-semibold text-white px-5 py-2 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: '#0e7490' }}>
+                  {moviendoGastos ? 'Moviendo…' : 'Mover'}
+                </button>
+              </div>
+            </div>
+            {errorMover && <p className="text-xs text-red-600 font-semibold mt-2">{errorMover}</p>}
+          </div>
+        </div>
+      )}
+
       {modalNotas && (
         <ModalNotas
           movimiento={modalNotas} userId={user.id}
@@ -1133,6 +1305,7 @@ export default function CashFlow() {
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function TablaCashFlow({
+  seleccionMover, onAlternarSeleccionMover,
   filas, saldoInicial, obras, rubros,
   movimientosBase, presupuestosBase, editorEnDetalle, onEditarDesdeDetalle,
   filaEditando, valoresEdicion, guardandoEdicion, errorEdicion,
@@ -1273,6 +1446,12 @@ function TablaCashFlow({
                   className={`border-b border-slate-100/80 last:border-0 transition-colors
                     ${m._virtual ? 'bg-slate-50/40' : saldoNeg ? 'bg-red-50/60' : 'hover:bg-slate-50/60'}`}>
                   <td className="px-3.5 py-3.5 text-slate-500 text-xs whitespace-nowrap">
+                    {seleccionMover && m._virtual && m.categoria === 'gasto_proyectado' && m._claveFecha && (
+                      <input type="checkbox" className="mr-2 align-middle accent-cyan-700"
+                        title="Elegir para moverlo junto con otros gastos proyectados"
+                        checked={seleccionMover.has(m.id)}
+                        onChange={() => onAlternarSeleccionMover(m.id)} />
+                    )}
                     {fmtFecha(m.fecha_pago)}
                   </td>
                   <td className="px-3.5 py-3.5">

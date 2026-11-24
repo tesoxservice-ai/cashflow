@@ -1,7 +1,12 @@
 // Pruebas del gasto proyectado (reparto en miércoles y descuento por facturas). Correr con: npm test
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes, combinarConProyeccion, presupuestosConImpacto, calcularImpuestosDeCobros, TASAS_IMPUESTOS_COBRO, esCobroDeNEC, RETENCION_TOTAL_NEC, indexarRegistrado, desgloseDeLinea } from './proyeccionPresupuesto.js'
+import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes, combinarConProyeccion, presupuestosConImpacto, calcularImpuestosDeCobros, TASAS_IMPUESTOS_COBRO, esCobroDeNEC, RETENCION_TOTAL_NEC, indexarRegistrado, desgloseDeLinea, NIVELACION_DIARIA } from './proyeccionPresupuesto.js'
+
+// Estas pruebas son del reparto anterior (cada línea entera en un miércoles, 55% / 45% miércoles / jueves), que sigue
+// disponible con NIVELACION_DIARIA.activa = false. La nivelación diaria (la que está activa en la app) se prueba en
+// nivelacionDiaria.test.js. Cada archivo de prueba corre en su propio proceso, así que esto no afecta a ese.
+NIVELACION_DIARIA.activa = false
 
 const HOY = new Date(2026, 9, 30) // 30/10/2026
 const OBRAS = ['o1', 'o2', 'o3', 'o4', 'o5', 'o6', 'o7', 'o8'].map(id => ({ id }))
