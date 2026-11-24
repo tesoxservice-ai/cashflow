@@ -1,7 +1,7 @@
 // Pruebas del gasto proyectado (reparto en miércoles y descuento por facturas). Correr con: npm test
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes, combinarConProyeccion, presupuestosConImpacto, calcularImpuestosDeCobros, TASAS_IMPUESTOS_COBRO, indexarRegistrado, desgloseDeLinea } from './proyeccionPresupuesto.js'
+import { calcularGastosProyectados, calcularVentasProyectadas, normalizarPartes, combinarConProyeccion, presupuestosConImpacto, calcularImpuestosDeCobros, TASAS_IMPUESTOS_COBRO, esCobroDeNEC, RETENCION_TOTAL_NEC, indexarRegistrado, desgloseDeLinea } from './proyeccionPresupuesto.js'
 
 const HOY = new Date(2026, 9, 30) // 30/10/2026
 const OBRAS = ['o1', 'o2', 'o3', 'o4', 'o5', 'o6', 'o7', 'o8'].map(id => ({ id }))
@@ -319,6 +319,25 @@ test('una venta de 100 trae cuatro gastos proyectados: IIBB 3, SUSS 2, Ganancias
   assert.deepEqual(resumen(calcularImpuestosDeCobros([venta('v1', '2026-11-16', 100)], HOY)), [
     ['v1', 'iibb', '2026-11-16', 3], ['v1', 'suss', '2026-11-16', 2], ['v1', 'ganancias', '2026-11-16', 2], ['v1', 'ley25413', '2026-11-16', 0.6],
   ])
+})
+
+test('a NEC se le suma una quinta fila de retenciones hasta llegar al 12% en total; a los demás clientes no', () => {
+  const nec = venta('n', '2026-11-16', 100_000_000, { proveedor_cliente: 'NEC ARGENTINA SOCIEDAD ANONIMA' })
+  const arsat = venta('a', '2026-11-16', 100_000_000, { proveedor_cliente: 'EMPRESA ARGENTINA DE SOLUCIONES SATELITALES' })
+  const proyNEC = venta('p', '2026-12-10', 100_000_000, { categoria: 'venta_proyectada', proveedor_cliente: null, obras: { codigo: '677' } })
+  const proyOtra = venta('q', '2026-12-10', 100_000_000, { categoria: 'venta_proyectada', proveedor_cliente: null, obras: { codigo: '669' } })
+  const filas = calcularImpuestosDeCobros([nec, arsat, proyNEC, proyOtra], HOY)
+  const total = id => Math.round(filas.filter(g => g.origenId === id).reduce((s, g) => s + g.monto, 0) * 100) / 100
+  assert.equal(RETENCION_TOTAL_NEC, 0.12)
+  assert.equal(total('n'), 12_000_000)
+  assert.equal(total('p'), 12_000_000)
+  assert.equal(total('a'), 7_600_000)
+  assert.equal(total('q'), 7_600_000)
+  const extra = filas.find(g => g.origenId === 'n' && g.impuesto === 'nec')
+  assert.equal(extra.etiqueta, 'Retenciones NEC')
+  assert.equal(extra.tasa, 0.044)
+  assert.equal(extra.monto, 4_400_000)
+  assert.equal(esCobroDeNEC({ proveedor_cliente: 'NEC', categoria: 'ingreso_cliente' }), false)
 })
 
 test('cada venta tiene sus propios cuatro gastos, aunque cobren el mismo día', () => {

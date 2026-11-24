@@ -54,13 +54,29 @@
 // del banco (0,6% de los pagos) no está proyectada. Alcanza a la venta proyectada de Operaciones (cada parte, si está dividida) y a las ventas ya cargadas
 // que todavía están proyectadas, desde hoy en adelante; no a FIMA, ni a lo "no se cumple", ni a períodos que no afectan el
 // saldo. Cuando la venta se cobra (se marca ejecutada) estas filas desaparecen y los impuestos reales se cargan del
-// extracto. Si cambia o se mueve la venta, los tres egresos se mueven con ella. Las tasas se cambian acá.
+// extracto. Si cambia o se mueve la venta, los egresos se mueven con ella. Las tasas se cambian acá. A los cobros de NEC se les
+// suma una quinta fila (ver RETENCION_TOTAL_NEC).
 export const TASAS_IMPUESTOS_COBRO = [
   { clave: 'iibb', etiqueta: 'IIBB', tasa: 0.03 },
   { clave: 'suss', etiqueta: 'SUSS', tasa: 0.02 },
   { clave: 'ganancias', etiqueta: 'Ganancias', tasa: 0.02 },
   { clave: 'ley25413', etiqueta: 'Ley 25413', tasa: 0.006 },
 ]
+
+// NEC retiene más que el resto: desde septiembre de 2026 su descuento real fue de 15,5% sobre lo facturado (bruto $ 1.716 M,
+// neto $ 1.449 M), contra 4,9% de ARSAT y 2,3% de Teledifusora. Finanzas fijó que a NEC se le descuente el 12% en total: a sus
+// cobros se les suma una quinta fila, "Retenciones NEC", por la diferencia con las tasas de arriba (12% - 7,6% = 4,4%).
+// Es NEC el cobro de una factura cargada a nombre de NEC ARGENTINA, o la venta proyectada de una de sus obras (OBRAS_NEC).
+export const RETENCION_TOTAL_NEC = 0.12
+export const OBRAS_NEC = ['658', '659', '661', '677', '678', '680']
+export const esCobroDeNEC = m =>
+  /NEC\s+ARGENTINA/i.test(m.proveedor_cliente ?? '') ||
+  (m.categoria === 'venta_proyectada' && OBRAS_NEC.includes(m.obras?.codigo))
+
+const tasaRetencionNEC = tasas => ({
+  clave: 'nec', etiqueta: 'Retenciones NEC',
+  tasa: Math.round((RETENCION_TOTAL_NEC - tasas.reduce((s, t) => s + t.tasa, 0)) * 1e6) / 1e6,
+})
 
 const montoDe = m => Number(m.montoEfectivo ?? (m.estado === 'ejecutado' ? (m.monto_neto ?? m.monto_bruto) : m.monto_bruto)) || 0
 const porcentajeTexto = tasa => `${Math.round(tasa * 10000) / 100}%`
@@ -76,7 +92,8 @@ export function calcularImpuestosDeCobros(filas, hoy = new Date(), tasas = TASAS
     if (!m.fecha_pago || m.fecha_pago < hoyISO) return
     const baseCobro = montoDe(m)
     if (!(baseCobro > 0)) return
-    tasas.forEach((t, ti) => {
+    const tasasDeEsteCobro = esCobroDeNEC(m) ? [...tasas, tasaRetencionNEC(tasas)] : tasas
+    tasasDeEsteCobro.forEach((t, ti) => {
       const monto = Math.round(baseCobro * t.tasa * 100) / 100
       if (monto > 0) resultado.push({ origen: m, origenId: m.id ?? `fila-${i}`, orden: ti + 1, impuesto: t.clave, etiqueta: t.etiqueta, tasa: t.tasa, fecha: m.fecha_pago, base: baseCobro, monto })
     })

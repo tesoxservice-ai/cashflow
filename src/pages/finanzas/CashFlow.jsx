@@ -1336,7 +1336,7 @@ function TablaCashFlow({
                         )}
                       </span>
                     ) : m._impuestoVenta ? (
-                      <span className="truncate block italic text-slate-500" title="Se calcula solo sobre el cobro de esa venta: IIBB 3%, SUSS 2%, Ganancias 2% y Ley 25413 0,6% (créditos).">
+                      <span className="truncate block italic text-slate-500" title="Se calcula solo sobre el cobro de esa venta: IIBB 3%, SUSS 2%, Ganancias 2% y Ley 25413 0,6% (créditos). A NEC se le suma una fila de retenciones hasta llegar al 12% en total.">
                         {m._impuestoEtiqueta} {Math.round(m._tasa * 10000) / 100}% s/ cobro
                         <span className="block not-italic text-slate-400">
                           de {fmtARS(m._baseCobro)}{m._clienteVenta ? ` · ${m._clienteVenta}` : ''}
