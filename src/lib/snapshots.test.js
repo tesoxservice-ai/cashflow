@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { armarSnapshot, compararSnapshots, alinearSeries, conceptoDe, cambiosDeLineas } from './snapshots.js'
+import { armarSnapshot, compararSnapshots, alinearSeries, conceptoDe, cambiosDeLineas, seguimientoDeLoEsperado, idsParaConsultar } from './snapshots.js'
 
 // Arma un "base" mínimo como el de construirBase: fechas, banco, fondos e índice de líneas pendientes.
 function baseDe({ hoy, dias = 5, banco0 = 1000, lineas = [] }) {
@@ -151,4 +151,140 @@ test('alinearSeries: sin tramo en común devuelve vacío', () => {
   const sa = { serie: { desde: '2026-01-01', banco: [1, 2] } }
   const sb = { serie: { desde: '2026-03-01', banco: [1, 2] } }
   assert.deepEqual(alinearSeries(sa, sb), { fechas: [], a: [], b: [] })
+})
+
+test('armarSnapshot guarda las ventas en neto con su bruto, retenciones e impuestos del banco', () => {
+  const { base, resultado, hoy } = baseDe({
+    hoy: '2026-11-25', dias: 10, banco0: 1000,
+    lineas: [
+      { id: 'v1', fecha: '2026-11-30', tipo: 'ingreso', monto: 93.94, categoria: 'ingreso_cliente', brutoFC: 121, retenidoEst: 23.55, bancoEst: 3.51 },
+      { id: 'v2', fecha: '2026-12-02', tipo: 'ingreso', monto: 50, categoria: 'venta_proyectada', virtual: true, brutoFC: 60, retenidoEst: 8, bancoEst: 2 },
+      { id: 'e1', fecha: '2026-11-28', tipo: 'egreso', monto: 40, categoria: 'factura' },
+    ],
+  })
+  const s = armarSnapshot({ base, resultado, hoy })
+  assert.equal(s.version, 2)
+  assert.equal(s.resumen.ingresos_pendientes, 143.94)          // lo que cuenta es el neto
+  assert.equal(s.resumen.ventas_bruto_pendientes, 181)
+  assert.equal(s.resumen.retenciones_pendientes, 31.55)
+  assert.equal(s.resumen.impuestos_banco_pendientes, 5.51)
+  const v1 = s.filas.find(f => f.id === 'v1')
+  assert.equal(v1.monto, 93.94)
+  assert.equal(v1.bruto, 121)
+  assert.equal(v1.retenido, 23.55)
+  assert.equal(s.filas.find(f => f.id === 'e1').bruto, undefined) // los egresos no llevan bruto
+})
+
+test('compararSnapshots muestra las ventas en neto de cada foto, y nada si una foto es vieja (sin ese dato)', () => {
+  const mk = (hoy, bruto, ret, banco) => {
+    const { base, resultado } = baseDe({ hoy, dias: 5, lineas: [{ id: 'v', fecha: hoy, tipo: 'ingreso', monto: bruto - ret - banco, categoria: 'ingreso_cliente', brutoFC: bruto, retenidoEst: ret, bancoEst: banco }] })
+    return armarSnapshot({ base, resultado, hoy })
+  }
+  const c = compararSnapshots(mk('2026-11-20', 100, 20, 3), mk('2026-11-27', 200, 40, 6))
+  assert.equal(c.ventasEnNeto.a.neto, 77)
+  assert.equal(c.ventasEnNeto.b.neto, 154)
+  assert.equal(c.ventasEnNeto.b.retenciones, 40)
+  const vieja = mk('2026-11-20', 100, 20, 3)
+  delete vieja.resumen.retenciones_pendientes
+  assert.equal(compararSnapshots(vieja, mk('2026-11-27', 200, 40, 6)).ventasEnNeto, null)
+})
+
+test('cambiosDeLineas: cada cambio trae una clave estable y un posible porqué en una frase', () => {
+  const [sa, sb] = dosFotos()
+  const cambios = cambiosDeLineas(sa, sb)
+  const porClase = clase => cambios.filter(c => c.clase === clase)
+  assert.ok(cambios.every(c => c.clave && c.motivo))
+  assert.equal(porClase('nueva')[0].clave, 'linea:f3')
+  assert.match(porClase('nueva')[0].motivo, /no estaba proyectado/i)
+  assert.match(porClase('fecha')[0].motivo, /Se corrió 2 días más tarde/)
+  const proy = porClase('proyeccion').find(c => c.concepto === 'gasto_proyectado')
+  assert.match(proy.clave, /^grupo:gasto_proyectado\|659\|Materiales/)
+  assert.match(proy.motivo, /Baja el gasto proyectado/)
+})
+
+test('cambiosDeLineas: una factura nueva de la misma obra, rubro y período que lo proyectado dice "se facturó"', () => {
+  const a = armarSnapshot(baseDe({ hoy: '2026-02-18', dias: 20, lineas: [
+    { id: 'g1', fecha: '2026-03-04', tipo: 'egreso', monto: 400, categoria: 'gasto_proyectado', virtual: true, obra: '659', rubro: 'Materiales', periodo: '2026-02-01' },
+  ] }))
+  const b = armarSnapshot(baseDe({ hoy: '2026-02-25', dias: 13, lineas: [
+    { id: 'f9', fecha: '2026-03-05', tipo: 'egreso', monto: 150, categoria: 'factura', obra: '659', rubro: 'Materiales', periodo: '2026-02-01' },
+    { id: 'g1', fecha: '2026-03-06', tipo: 'egreso', monto: 250, categoria: 'gasto_proyectado', virtual: true, obra: '659', rubro: 'Materiales', periodo: '2026-02-01' },
+  ] }))
+  const cambios = cambiosDeLineas(a, b)
+  assert.match(cambios.find(c => c.clase === 'nueva').motivo, /Se facturó/)
+  assert.equal(cambios.filter(c => c.clase === 'proyeccion').length, 1)
+  assert.equal(cambios.find(c => c.clase === 'proyeccion').dif, -150) // 400 a 250: se facturaron 150
+  assert.match(cambios.find(c => c.clase === 'proyeccion').motivo, /se cargaron facturas/)
+})
+
+test('mover un gasto proyectado de un día a otro no es un cambio', () => {
+  const mk = (hoy, fecha) => armarSnapshot(baseDe({ hoy, dias: 12, lineas: [{ id: 'g', fecha, tipo: 'egreso', monto: 100, categoria: 'gasto_proyectado', virtual: true, obra: '1', rubro: 'R', periodo: '2026-02-01' }] }))
+  assert.equal(cambiosDeLineas(mk('2026-02-18', '2026-02-26'), mk('2026-02-20', '2026-03-02')).length, 0)
+})
+
+const fotosSeguimiento = () => {
+  const a = armarSnapshot(baseDe({ hoy: '2026-03-01', dias: 20, lineas: [
+    { id: 'c1', fecha: '2026-03-05', tipo: 'ingreso', monto: 1000000, categoria: 'ingreso_cliente', obra: '658', etiqueta: 'NEC', numeroFactura: 'A1' },
+    { id: 'c2', fecha: '2026-03-06', tipo: 'ingreso', monto: 2000000, categoria: 'ingreso_cliente', obra: '658', etiqueta: 'NEC', numeroFactura: 'A2' },
+    { id: 'c3', fecha: '2026-03-07', tipo: 'ingreso', monto: 3000000, categoria: 'ingreso_cliente', obra: '659', etiqueta: 'ARSAT' },
+    { id: 'c4', fecha: '2026-03-08', tipo: 'ingreso', monto: 4000000, categoria: 'ingreso_cliente', obra: '659', etiqueta: 'ARSAT' },
+    { id: 'c5', fecha: '2026-03-09', tipo: 'ingreso', monto: 5000000, categoria: 'ingreso_cliente', obra: '660', etiqueta: 'X' },
+    { id: 'p1', fecha: '2026-03-10', tipo: 'egreso', monto: 700000, categoria: 'factura', obra: '661', etiqueta: 'Proveedor' },
+    { id: 'c6', fecha: '2026-03-25', tipo: 'ingreso', monto: 9000000, categoria: 'ingreso_cliente', obra: '662', etiqueta: 'FUTURO' }, // fuera de la ventana
+    { id: 'g1', fecha: '2026-03-06', tipo: 'egreso', monto: 100, categoria: 'gasto_proyectado', virtual: true, obra: '1', rubro: 'R', periodo: '2026-02-01' }, // proyectada: no cuenta
+  ] }))
+  const b = armarSnapshot(baseDe({ hoy: '2026-03-15', dias: 10, lineas: [
+    { id: 'c5', fecha: '2026-03-20', tipo: 'ingreso', monto: 5000000, categoria: 'ingreso_cliente', obra: '660', etiqueta: 'X' }, // se corrió
+    { id: 'c6', fecha: '2026-03-25', tipo: 'ingreso', monto: 9000000, categoria: 'ingreso_cliente', obra: '662', etiqueta: 'FUTURO' },
+  ] }))
+  return [a, b]
+}
+
+test('seguimientoDeLoEsperado: de lo que se esperaba entre las fotos, qué se cumplió, qué no y qué se corrió', () => {
+  const [a, b] = fotosSeguimiento()
+  assert.deepEqual(idsParaConsultar(a, b).sort(), ['c1', 'c2', 'c3', 'c4', 'p1']) // c5 sigue en B; c6 está fuera de la ventana; g1 es proyectada
+  const estados = new Map([
+    ['c1', { estado: 'ejecutado', monto: 1000000, fecha_pago: '2026-03-05' }],                   // cobrado igual
+    ['c2', { estado: 'ejecutado', monto: 1800000, fecha_pago: '2026-03-12' }],                   // cobrado por menos
+    ['c3', { estado: 'proyectado', estado_proyeccion: 'normal', fecha_pago: '2026-03-07' }],      // venció y no se cobró
+    ['c4', { estado: 'proyectado', estado_proyeccion: 'no_cumple', fecha_pago: '2026-03-08' }],
+    // p1 no está en la base: sin dato
+  ])
+  const r = seguimientoDeLoEsperado(a, b, estados)
+  const de = id => r.lineas.find(l => l.id === id)
+  assert.equal(r.cantidad, 6)
+  assert.equal(de('c1').resultado, 'cumplido')
+  assert.equal(de('c2').resultado, 'cumplido_distinto')
+  assert.equal(de('c2').dif, -200000)
+  assert.match(de('c2').motivo, /por menos de lo esperado/)
+  assert.equal(de('c3').resultado, 'no_cumplido')
+  assert.equal(de('c3').diasAtraso, 8) // venció el 7/3, la foto nueva es del 15/3
+  assert.match(de('c3').motivo, /Venció el 07\/03\/2026 y todavía no se cobró/)
+  assert.equal(de('c4').resultado, 'no_cumple')
+  assert.equal(de('c5').resultado, 'reprogramado')
+  assert.equal(de('c5').fechaReal, '2026-03-20')
+  assert.equal(de('p1').resultado, 'sin_dato')
+  assert.equal(r.totales.cumplido.cantidad, 1)
+  assert.equal(r.totales.no_cumplido.esperado, 3000000)
+})
+
+test('seguimientoDeLoEsperado: un pago vencido dice "pagó", una línea que se corrió según la base cuenta como reprogramada, y sin estados todo es "sin dato"', () => {
+  const [a, b] = fotosSeguimiento()
+  const r1 = seguimientoDeLoEsperado(a, b, new Map([
+    ['p1', { estado: 'proyectado', estado_proyeccion: 'normal', fecha_pago: '2026-03-10' }],
+    ['c1', { estado: 'proyectado', estado_proyeccion: 'reprogramado', fecha_pago: '2026-04-02' }],
+  ]))
+  assert.match(r1.lineas.find(l => l.id === 'p1').motivo, /todavía no se pagó/)
+  assert.equal(r1.lineas.find(l => l.id === 'c1').resultado, 'reprogramado')
+  assert.match(r1.lineas.find(l => l.id === 'c1').motivo, /se corrió al 02\/04\/2026/)
+  const r2 = seguimientoDeLoEsperado(a, b)
+  assert.equal(r2.lineas.filter(l => l.resultado === 'sin_dato').length, 5)
+  assert.equal(r2.lineas.filter(l => l.resultado === 'reprogramado').length, 1) // c5: se ve en la foto B sin consultar nada
+})
+
+test('seguimientoDeLoEsperado: una diferencia de hasta $ 1.000 o 1% se considera cumplido', () => {
+  const [a, b] = fotosSeguimiento()
+  const r = seguimientoDeLoEsperado(a, b, new Map([['c1', { estado: 'ejecutado', monto: 995000, fecha_pago: '2026-03-05' }], ['c2', { estado: 'ejecutado', monto: 1960000, fecha_pago: '2026-03-06' }]]))
+  assert.equal(r.lineas.find(l => l.id === 'c1').resultado, 'cumplido')          // -0,5%
+  assert.equal(r.lineas.find(l => l.id === 'c2').resultado, 'cumplido_distinto') // -2%
 })

@@ -150,6 +150,10 @@ export function construirBase({ hoy, movimientos, sumaBase, fondos, saldosFima, 
       obra: m.obras?.codigo ?? '',
       rubro: m.rubros?.nombre ?? '',
       periodo: m.periodo ?? null,
+      // Ventas en neto: la factura (bruto) y lo que se estima que retiene el cliente y cobra el banco (para las fotos).
+      brutoFC: m._brutoFC ?? null,
+      retenidoEst: m._retenciones ? m._retenciones.totalRetenido : null,
+      bancoEst: m._retenciones ? m._retenciones.bancoImpuestos : null,
     }
     indice.set(m.id, item)
     if (!porFecha.has(item.fecha)) porFecha.set(item.fecha, [])
