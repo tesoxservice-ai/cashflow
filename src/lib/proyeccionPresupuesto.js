@@ -46,7 +46,12 @@
 // de descontar las facturas (o ventas reales): si llega una factura, todas las partes bajan en proporción, y si la
 // línea se factura entera desaparecen todas. Una división manual manda sobre la fecha única y sobre las divisiones
 // fijas de este archivo; "cerrar proyección" manda sobre todo.
+import { RETENCIONES_POR_CLIENTE, perfilOGeneral, resolverRetenciones, desgloseDeCobro, mapaDeAjustes, claveAjusteVenta, claveAjusteCliente } from './retencionesClientes.js'
 
+// NOTA: lo de abajo es el cálculo ANTERIOR de impuestos por cobro (filas grises con tasas generales). Hoy, con
+// RETENCIONES_POR_CLIENTE.activa = true (lo normal), cada venta se muestra en NETO con retenciones por cliente, editables, y no hay
+// filas grises (ver retencionesClientes.js y aplicarRetencionesNetas). Esto sigue vivo solo para `activa: false`.
+//
 // Impuestos de los cobros. Cada factura de venta que todavía no se cobró genera CUATRO egresos proyectados propios, en la
 // misma fecha del cobro y calculados sobre el importe de esa factura: IIBB 3% (el banco lo retiene sobre lo acreditado: en
 // los extractos de septiembre y octubre de 2026 fue exactamente 3,00%), SUSS 2%, Ganancias 2% y Ley 25413 sobre el crédito
@@ -63,11 +68,14 @@ export const TASAS_IMPUESTOS_COBRO = [
   { clave: 'ley25413', etiqueta: 'Ley 25413', tasa: 0.006 },
 ]
 
-// NEC retiene más que el resto: desde septiembre de 2026 su descuento real fue de 15,5% sobre lo facturado (bruto $ 1.716 M,
-// neto $ 1.449 M), contra 4,9% de ARSAT y 2,3% de Teledifusora. Finanzas fijó que a NEC se le descuente el 12% en total: a sus
-// cobros se les suma una quinta fila, "Retenciones NEC", por la diferencia con las tasas de arriba (12% - 7,6% = 4,4%).
+// NEC retiene mucho más que el resto. Medido en los 29 recibos de NEC de septiembre a noviembre de 2026 ($ 1.810 M cobrados):
+// NEC retiene 19,3% del total facturado (IVA 13,9% = el 80% del IVA, Ganancias 1,6%, IIBB Santa Fe 3,1%, IIBB Capital 0,7%).
+// Después el banco le saca IIBB 3% + Ley 25413 0,6% a lo que acredita (80,7% del total): 3,6% x 0,807 = 2,9%. Total: 22,2%
+// de cada cobro de NEC (el 12% que había antes era un estimado a ojo). A sus cobros se les suma una quinta fila,
+// "Retenciones NEC", por la diferencia con las tasas de arriba (22,2% - 7,6% = 14,6%). La retención de IVA es un adelanto
+// que se recupera contra el IVA a pagar: eso se ve aparte, en lo "a favor" (no acá, que es la plata que entra al banco).
 // Es NEC el cobro de una factura cargada a nombre de NEC ARGENTINA, o la venta proyectada de una de sus obras (OBRAS_NEC).
-export const RETENCION_TOTAL_NEC = 0.12
+export const RETENCION_TOTAL_NEC = 0.222
 export const OBRAS_NEC = ['658', '659', '661', '677', '678', '680']
 export const esCobroDeNEC = m =>
   /NEC\s+ARGENTINA/i.test(m.proveedor_cliente ?? '') ||
@@ -801,11 +809,46 @@ export function construirFilaVirtualVenta(proyectada, obras) {
   }
 }
 
+// ─── Cobros en neto (retenciones e impuestos aplicados) ──────────────────────────────────────────
+// Cada venta que todavía no se cobró (factura de venta o venta proyectada, desde hoy en adelante) pasa a mostrarse por lo que
+// REALMENTE nos va a quedar: importe de la factura menos las retenciones del cliente y los impuestos del banco. El detalle
+// queda en `_retenciones` (la pantalla lo muestra en un desplegable, editable) y el importe de la factura en `_brutoFC`.
+// No se agregan filas aparte: el saldo acumulado da lo mismo que con las filas grises, pero en una sola fila por venta.
+// No se tocan los objetos originales: las ventas que no entran se devuelven iguales.
+export function esCobroConRetenciones(m, hoyISO) {
+  if (m.tipo !== 'ingreso' || (m.categoria !== 'ingreso_cliente' && m.categoria !== 'venta_proyectada')) return false
+  if (m.estado === 'ejecutado' || m.estado_proyeccion === 'no_cumple' || m._afectaCashflow === false) return false
+  if (!m.fecha_pago || m.fecha_pago < hoyISO) return false
+  return montoDe(m) > 0
+}
+
+export function aplicarRetencionesNetas(filas, hoy = new Date(), ajustes = []) {
+  const hoyISO = isoLocalDe(hoy)
+  const config = ajustes instanceof Map ? ajustes : mapaDeAjustes(ajustes)
+  return filas.map(m => {
+    if (!esCobroConRetenciones(m, hoyISO)) return m
+    const bruto = montoDe(m)
+    const perfil = perfilOGeneral(m)
+    const origen = resolverRetenciones(m, perfil, config)
+    const d = desgloseDeCobro(bruto, origen)
+    return {
+      ...m,
+      montoEfectivo: d.disponible,
+      _brutoFC: bruto,
+      _retenciones: {
+        ...d, perfil: perfil.nombre, perfilClave: perfil.clave, fuente: origen.fuente,
+        claveVenta: claveAjusteVenta(m), claveCliente: perfil.clave !== 'general' ? claveAjusteCliente(perfil) : null,
+        estandar: perfil.retenciones,
+      },
+    }
+  })
+}
+
 // Combina movimientos reales con las filas virtuales de proyección (gastos
 // pendientes de facturar + ventas pendientes de facturar) y ordena por fecha
 // de pago (a igualdad de fecha, los reales van antes que las proyecciones, y
 // después se desempata por id para que el orden sea estable).
-export function combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, hoy = new Date()) {
+export function combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, hoy = new Date(), ajustesRetenciones = []) {
   const gastosProyectados = calcularGastosProyectados(presupuestosConImpacto(presupuestos, rubros), movimientos, fechasEstimadasGasto, obras, hoy)
   const ventasPendientes  = calcularVentasProyectadas(ventasProyectadas, movimientos, fechasEstimadasVenta, obras, hoy)
   const virtuales = [
@@ -813,8 +856,15 @@ export function combinarConProyeccion(movimientos, presupuestos, ventasProyectad
     ...ventasPendientes.map(v => construirFilaVirtualVenta(v, obras)),
   ]
   // Los impuestos se calculan sobre cada venta (la proyectada y las ya cargadas), por eso van después de armar las demás filas.
-  const impuestosVenta = calcularImpuestosDeCobros([...movimientos, ...virtuales], hoy).map(g => construirFilaVirtualImpuestoVenta(g))
-  return [...movimientos, ...virtuales, ...impuestosVenta].sort((a, b) => {
+  // Con retenciones por cliente (lo normal) la venta pasa a su neto y no hay filas grises; apagado, vuelven las filas grises.
+  let todas
+  if (RETENCIONES_POR_CLIENTE.activa) {
+    todas = aplicarRetencionesNetas([...movimientos, ...virtuales], hoy, ajustesRetenciones)
+  } else {
+    const impuestosVenta = calcularImpuestosDeCobros([...movimientos, ...virtuales], hoy).map(g => construirFilaVirtualImpuestoVenta(g))
+    todas = [...movimientos, ...virtuales, ...impuestosVenta]
+  }
+  return todas.sort((a, b) => {
     const fa = a.fecha_pago ?? a.periodo ?? ''
     const fb = b.fecha_pago ?? b.periodo ?? ''
     if (fa !== fb) return fa < fb ? -1 : 1

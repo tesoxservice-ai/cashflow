@@ -17,6 +17,7 @@ import Fima                         from './pages/finanzas/Fima'
 import Historial                    from './pages/finanzas/Historial'
 import ImportarFacturas             from './pages/finanzas/ImportarFacturas'
 import HistorialProyeccionesPagina  from './pages/finanzas/HistorialProyeccionesPagina'
+import RetencionesPagina            from './pages/finanzas/RetencionesPagina'
 import MargenPorObra                from './pages/MargenPorObra'
 import DashboardDirectorio          from './pages/directorio/Dashboard'
 import ProtectedRoute               from './components/ProtectedRoute'
@@ -88,6 +89,9 @@ export default function App() {
       } />
       <Route path="/finanzas/historial-proyecciones" element={
         <ProtectedRoute rolRequerido="finanzas"><SoloFotosProyeccion><HistorialProyeccionesPagina /></SoloFotosProyeccion></ProtectedRoute>
+      } />
+      <Route path="/finanzas/retenciones" element={
+        <ProtectedRoute rolRequerido="finanzas"><RetencionesPagina /></ProtectedRoute>
       } />
       <Route path="/finanzas/ventas" element={
         <ProtectedRoute rolRequerido="finanzas"><VentasProyectadasFin /></ProtectedRoute>

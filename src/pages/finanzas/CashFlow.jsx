@@ -14,6 +14,7 @@ import ModalNotas from './components/ModalNotas'
 import { combinarConProyeccion, dividirPorPorcentajes, indexarRegistrado, desgloseDeLinea, NIVELACION_DIARIA } from '../../lib/proyeccionPresupuesto'
 import { CARD, TONOS, Icono, ICONOS, ico, CardResumen as CardPremium } from '../directorio/utilsDirectorio'
 import { puedeEditarPresupuestosEnFinanzas } from '../../lib/permisos'
+import { desgloseDeCobro, normalizarItems, BASES_RETENCION } from '../../lib/retencionesClientes'
 
 // Una línea de gasto proyectado (obra + rubro + período) puede tener varias filas (partes): todas comparten esta clave.
 const claveDeLinea = m => `${m._claveFecha.obra_id}|${m._claveFecha.rubro_id}|${m._claveFecha.periodo}`
@@ -263,6 +264,8 @@ export default function CashFlow() {
   const [ventasProyectadas, setVentasProyectadas] = useState([])
   const [fechasEstimadasGasto, setFechasEstimadasGasto] = useState([])
   const [fechasEstimadasVenta, setFechasEstimadasVenta] = useState([])
+  const [ajustesRetenciones, setAjustesRetenciones] = useState([]) // ajustes editables de retenciones (tabla retenciones_config)
+  const [tablaRetencionesFaltante, setTablaRetencionesFaltante] = useState(false)
   const [saldosBase,  setSaldosBase]  = useState([])
   const [cargando,     setCargando]     = useState(true)
   const [actualizando, setActualizando] = useState(false)
@@ -386,6 +389,20 @@ export default function CashFlow() {
 
   useEffect(() => { cargarFechasEstimadasVenta() }, [cargarFechasEstimadasVenta])
 
+  // Ajustes de retenciones. Si la tabla todavía no se creó (sql/retenciones_config.sql), se usan los valores estándar y no se puede guardar.
+  const cargarAjustesRetenciones = useCallback(async () => {
+    const { data, error } = await supabase.from('retenciones_config').select('*')
+    if (error) {
+      setTablaRetencionesFaltante(['42P01', 'PGRST205'].includes(error.code) || /retenciones_config/i.test(error.message ?? ''))
+      setAjustesRetenciones([])
+      return
+    }
+    setTablaRetencionesFaltante(false)
+    setAjustesRetenciones(data ?? [])
+  }, [])
+
+  useEffect(() => { cargarAjustesRetenciones() }, [cargarAjustesRetenciones])
+
   const cargarSaldosBase = useCallback(async () => {
     const { data } = await supabase
       .from('saldos_iniciales')
@@ -458,8 +475,8 @@ export default function CashFlow() {
   // presupuesto de Operaciones todavía no se facturó). Las virtuales nunca se
   // guardan en la base: se recalculan cada vez a partir de presupuestos vivos.
   const movimientosCombinados = useMemo(
-    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros),
-    [movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros]
+    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, new Date(), ajustesRetenciones),
+    [movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, ajustesRetenciones]
   )
 
   const { movimientosConSaldo, saldoInicial } = useMemo(() => {
@@ -946,6 +963,25 @@ export default function CashFlow() {
     await cargarFechasEstimadasGasto()
   }
 
+  // ─── Retenciones e impuestos editables ──────────────────────────────────────────────────────────
+  // Se guardan en retenciones_config (una fila por cliente o por venta). Devuelven un texto de error, o null si salió bien.
+  const puedeEditarRetenciones = perfil?.rol === 'finanzas' || perfil?.rol === 'directorio' || puedeEditarPresupuestosEnFinanzas(user)
+  const textoErrorRetenciones = error => (/retenciones_config|42P01|PGRST205/i.test(`${error.code ?? ''} ${error.message ?? ''}`)
+    ? 'Falta crear la tabla de retenciones: correr el script sql/retenciones_config.sql.'
+    : 'No se pudo guardar. Probá de nuevo.')
+  async function handleGuardarRetenciones(clave, { retenciones, banco }) {
+    const { error } = await supabase.from('retenciones_config').upsert({ clave, retenciones, banco }, { onConflict: 'clave' })
+    if (error) return textoErrorRetenciones(error)
+    await cargarAjustesRetenciones()
+    return null
+  }
+  async function handleBorrarRetenciones(clave) {
+    const { error } = await supabase.from('retenciones_config').delete().eq('clave', clave)
+    if (error) return textoErrorRetenciones(error)
+    await cargarAjustesRetenciones()
+    return null
+  }
+
   const selCls = `w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200 text-slate-900 bg-white
     transition-shadow focus:outline-none focus:ring-2 focus:ring-teal-500/25 focus:border-teal-400`
   const lbCls = 'block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5'
@@ -1148,6 +1184,10 @@ export default function CashFlow() {
               </div>
             )}
             <TablaCashFlow
+              puedeEditarRetenciones={puedeEditarRetenciones}
+              tablaRetencionesFaltante={tablaRetencionesFaltante}
+              onGuardarRetenciones={handleGuardarRetenciones}
+              onBorrarRetenciones={handleBorrarRetenciones}
               seleccionMover={puedeMoverGastos ? seleccionMover : null}
               onAlternarSeleccionMover={alternarSeleccionMover}
               filas={filasFiltradas}
@@ -1305,6 +1345,7 @@ export default function CashFlow() {
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function TablaCashFlow({
+  puedeEditarRetenciones, tablaRetencionesFaltante, onGuardarRetenciones, onBorrarRetenciones,
   seleccionMover, onAlternarSeleccionMover,
   filas, saldoInicial, obras, rubros,
   movimientosBase, presupuestosBase, editorEnDetalle, onEditarDesdeDetalle,
@@ -1321,6 +1362,9 @@ function TablaCashFlow({
   const [detalleAbierto, setDetalleAbierto] = useState(() => new Set())
   const indiceRegistrado = useMemo(() => indexarRegistrado(movimientosBase), [movimientosBase])
   const alternarDetalle = id => setDetalleAbierto(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  // Desplegable de retenciones e impuestos de cada venta (detalle y edición).
+  const [retencionesAbiertas, setRetencionesAbiertas] = useState(() => new Set())
+  const alternarRetenciones = id => setRetencionesAbiertas(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   const cantidadRegistrada = m => (m.categoria === 'venta_proyectada'
     ? indiceRegistrado.ventas[`${m.obra_id}|${m.periodo}`]
     : indiceRegistrado.facturas[`${m.obra_id}|${m.rubro_id}|${m.periodo}`])?.length ?? 0
@@ -1515,7 +1559,7 @@ function TablaCashFlow({
                         )}
                       </span>
                     ) : m._impuestoVenta ? (
-                      <span className="truncate block italic text-slate-500" title="Se calcula solo sobre el cobro de esa venta: IIBB 3%, SUSS 2%, Ganancias 2% y Ley 25413 0,6% (créditos). A NEC se le suma una fila de retenciones hasta llegar al 12% en total.">
+                      <span className="truncate block italic text-slate-500" title="Se calcula solo sobre el cobro de esa venta: IIBB 3%, SUSS 2%, Ganancias 2% y Ley 25413 0,6% (créditos). A NEC se le suma una fila de retenciones hasta llegar al 22,2% en total (retenciones reales de sus recibos más impuestos del banco).">
                         {m._impuestoEtiqueta} {Math.round(m._tasa * 10000) / 100}% s/ cobro
                         <span className="block not-italic text-slate-400">
                           de {fmtARS(m._baseCobro)}{m._clienteVenta ? ` · ${m._clienteVenta}` : ''}
@@ -1529,13 +1573,26 @@ function TablaCashFlow({
                     {m.numero_factura && (
                       <span className="text-xs text-slate-400 block">Nº {m.numero_factura}</span>
                     )}
+                    {m._retenciones && m.tipo === 'ingreso' && (
+                      <button onClick={() => alternarRetenciones(m.id)}
+                        title="Ver el detalle de la factura, las retenciones y los impuestos, y editarlos"
+                        className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 hover:text-amber-800 transition-colors">
+                        <span className="inline-block w-3">{retencionesAbiertas.has(m.id) ? '▾' : '▸'}</span>
+                        Retenciones e impuestos: −{fmtARS(m._brutoFC - m.montoEfectivo)}
+                        {m._retenciones.fuente !== 'estandar' && <span className="ml-1 rounded bg-amber-100 text-amber-800 px-1.5 py-px font-semibold">ajustado</span>}
+                      </button>
+                    )}
                   </td>
                   <td className="px-3.5 py-3.5 text-slate-400 text-xs whitespace-nowrap">
                     {m.obras?.codigo ?? '—'}
                   </td>
                   <td className="px-3.5 py-3.5 text-right tabular-nums whitespace-nowrap">
                     {m.tipo === 'ingreso'
-                      ? <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : m._virtual ? 'text-slate-400 font-semibold' : 'text-emerald-600 font-semibold'}>{fmtARS(m.montoEfectivo)}</span>
+                      ? <>
+                          <span className={m.estado_proyeccion === 'no_cumple' ? 'text-slate-300 font-semibold line-through' : m._virtual ? 'text-slate-400 font-semibold' : 'text-emerald-600 font-semibold'}
+                            title={m._retenciones ? 'Neto estimado: lo que queda después de las retenciones y los impuestos del banco' : undefined}>{fmtARS(m.montoEfectivo)}</span>
+                          {m._retenciones && <span className="block text-[10px] text-slate-400 font-normal">FC {fmtARS(m._brutoFC)} · neto</span>}
+                        </>
                       : <span className="text-slate-200 text-xs">—</span>}
                   </td>
                   <td className="px-3.5 py-3.5 text-right tabular-nums whitespace-nowrap">
@@ -1617,6 +1674,12 @@ function TablaCashFlow({
                     onBorrarEdicion={onBorrarEdicion} onNotas={onNotas} onEditar={onEditarDesdeDetalle}
                   />
                 )}
+                {m._retenciones && m.tipo === 'ingreso' && retencionesAbiertas.has(m.id) && (
+                  <FilaRetenciones
+                    m={m} puedeEditar={puedeEditarRetenciones} tablaFaltante={tablaRetencionesFaltante}
+                    onGuardar={onGuardarRetenciones} onBorrar={onBorrarRetenciones}
+                  />
+                )}
                 </Fragment>
               )
             })}
@@ -1624,6 +1687,174 @@ function TablaCashFlow({
         </table>
       </div>
     </div>
+  )
+}
+
+// ─── Retenciones e impuestos de una venta: desplegable con el detalle y edición ─────────────────────
+// Muestra la factura (bruto), lo que retiene el cliente, lo que le saca el banco y el neto que queda. Se puede cambiar la alícuota,
+// agregar o sacar retenciones, para esa venta o para todas las ventas del cliente (se guardan en retenciones_config).
+
+// Pasa las retenciones de la pantalla (texto) a la forma que se guarda y se calcula.
+const aBorradorRet = items => items.map(it => ({
+  clave: it.clave, etiqueta: it.etiqueta, base: it.base, esIVA: !!it.esIVA,
+  valor: it.base === 'monto' ? String(it.monto ?? 0) : String(Math.round(it.tasa * 10000) / 100).replace('.', ','),
+}))
+const numeroDe = t => Number(String(t ?? '').replace(/\./g, '').replace(',', '.'))
+const desdeBorradorRet = (lista, baseFija = null) => lista.map((it, i) => {
+  const n = numeroDe(it.valor)
+  const base = baseFija ?? it.base
+  return { clave: it.clave || `extra_${i}`, etiqueta: it.etiqueta.trim(), base, esIVA: !!it.esIVA, ...(base === 'monto' ? { monto: n } : { tasa: n / 100 }) }
+})
+const mensajeInvalido = lista => {
+  for (const it of lista) {
+    const n = numeroDe(it.valor)
+    if (!it.etiqueta.trim()) return 'Poné un nombre a cada retención (o sacala con la ✕).'
+    if (!Number.isFinite(n) || n < 0) return `Revisá el valor de "${it.etiqueta}": tiene que ser un número mayor o igual a cero.`
+    if (it.base !== 'monto' && n > 100) return `Revisá el porcentaje de "${it.etiqueta}": no puede pasar de 100.`
+  }
+  return ''
+}
+
+function FilaRetenciones({ m, puedeEditar, tablaFaltante, onGuardar, onBorrar }) {
+  const r = m._retenciones
+  const [editando, setEditando] = useState(false)
+  const [ret, setRet] = useState([])
+  const [banco, setBanco] = useState([])
+  const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState('')
+
+  const empezar = () => { setRet(aBorradorRet(r.retenciones)); setBanco(aBorradorRet(r.banco)); setError(''); setEditando(true) }
+  const cambiar = (set, i, campo, valor) => set(lista => lista.map((it, j) => (j === i ? { ...it, [campo]: valor } : it)))
+  const agregar = () => setRet(lista => [...lista, { clave: '', etiqueta: '', base: 'neto', esIVA: false, valor: '' }])
+
+  // Vista previa del neto con lo que se está editando (no guarda nada hasta apretar un botón de guardar).
+  const vista = useMemo(() => {
+    if (!editando) return r
+    const itemsRet = normalizarItems(desdeBorradorRet(ret.filter(it => !mensajeInvalido([it])))) ?? []
+    const itemsBanco = normalizarItems(desdeBorradorRet(banco.filter(it => !mensajeInvalido([it])), 'acreditado'), 'acreditado') ?? []
+    return desgloseDeCobro(m._brutoFC, { retenciones: itemsRet, banco: itemsBanco })
+  }, [editando, ret, banco, r, m._brutoFC])
+
+  async function guardar(clave) {
+    const msg = mensajeInvalido([...ret, ...banco])
+    if (msg) { setError(msg); return }
+    setGuardando(true); setError('')
+    let e = await onGuardar(clave, { retenciones: desdeBorradorRet(ret), banco: desdeBorradorRet(banco, 'acreditado') })
+    // Si se guarda para todo el cliente y esta venta tenía un ajuste propio, se saca: si no, seguiría mandando el de la venta.
+    if (!e && clave === r.claveCliente && r.fuente === 'venta') e = await onBorrar(r.claveVenta)
+    setGuardando(false)
+    if (e) setError(e); else setEditando(false)
+  }
+  async function volverAEstandar() {
+    const clave = r.fuente === 'venta' ? r.claveVenta : r.claveCliente
+    if (!clave) return
+    setGuardando(true); setError('')
+    const e = await onBorrar(clave)
+    setGuardando(false)
+    if (e) setError(e); else setEditando(false)
+  }
+
+  const fuenteTexto = r.fuente === 'venta' ? 'Ajustado para esta venta'
+    : r.fuente === 'cliente' ? `Ajustado para todas las ventas de ${r.perfil}` : `Valores estándar de ${r.perfil}`
+  const linea = (etiqueta, detalle, valor, { fuerte = false, resta = false, nota = null } = {}) => (
+    <div className={`flex items-baseline gap-3 py-1 ${fuerte ? 'border-t border-amber-200 mt-1 pt-1.5' : ''}`}>
+      <span className={`flex-1 min-w-0 ${fuerte ? 'font-bold text-slate-800' : 'text-slate-700'}`}>
+        {etiqueta}
+        {detalle && <span className="text-slate-400 text-[11px] font-normal"> · {detalle}</span>}
+        {nota && <span className="ml-2 text-emerald-600 text-[11px] font-semibold">{nota}</span>}
+      </span>
+      <span className={`tabular-nums whitespace-nowrap ${fuerte ? 'font-bold text-slate-900' : resta ? 'text-rose-600' : 'text-slate-700'}`}>{resta ? '−' : ''}{fmtARS(valor)}</span>
+    </div>
+  )
+  const inputCls = 'px-2 py-1 text-xs rounded-md border border-slate-200 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/25'
+
+  return (
+    <tr style={{ backgroundColor: '#fffbeb' }} className="border-b border-amber-100">
+      <td colSpan={9} className="px-4 py-3">
+        <div className="max-w-[780px] ml-6 text-xs">
+          <div className="flex flex-wrap items-center gap-2 mb-1.5">
+            <p className="font-bold text-slate-800">Retenciones e impuestos estimados · {r.perfil}</p>
+            <span className="rounded bg-amber-100 text-amber-800 px-1.5 py-px text-[11px] font-semibold">{fuenteTexto}</span>
+            {puedeEditar && !editando && (
+              <button onClick={empezar} disabled={tablaFaltante} className="ml-auto font-semibold disabled:opacity-40" style={{ color: '#0e7490' }}>Editar retenciones</button>
+            )}
+          </div>
+          {tablaFaltante && <p className="text-amber-700 mb-1">Para poder guardar cambios hay que crear la tabla de retenciones (script sql/retenciones_config.sql).</p>}
+
+          {!editando ? (
+            <>
+              {linea('Factura (con IVA)', null, m._brutoFC, { fuerte: false })}
+              {linea('Importe sin IVA', null, vista.neto)}
+              {linea('IVA de la factura', null, vista.iva)}
+              <p className="mt-1.5 mb-0.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Retenciones del cliente</p>
+              {vista.retenciones.length === 0 && <p className="text-slate-400 py-1">Sin retenciones.</p>}
+              {vista.retenciones.map(it => linea(it.etiqueta, it.detalle, it.monto, { resta: true, nota: it.esIVA ? 'adelanto de IVA: queda a favor' : null }))}
+              {linea('Entra al banco', null, vista.alBanco, { fuerte: true })}
+              <p className="mt-1.5 mb-0.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Impuestos del banco</p>
+              {vista.banco.map(it => linea(it.etiqueta, it.detalle, it.monto, { resta: true }))}
+              {linea('Neto disponible', null, vista.disponible, { fuerte: true })}
+            </>
+          ) : (
+            <>
+              <p className="mt-1 mb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Retenciones del cliente</p>
+              {ret.length === 0 && <p className="text-slate-400 py-1">Sin retenciones (agregá una abajo).</p>}
+              {ret.map((it, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-2 py-1">
+                  <input className={`${inputCls} w-52`} value={it.etiqueta} placeholder="Nombre (ej.: IIBB Córdoba)" onChange={e => cambiar(setRet, i, 'etiqueta', e.target.value)} />
+                  <select className={inputCls} value={it.base} onChange={e => cambiar(setRet, i, 'base', e.target.value)}>
+                    {Object.entries(BASES_RETENCION).map(([k, txt]) => <option key={k} value={k}>{k === 'monto' ? txt : `% del ${txt.toLowerCase()}`}</option>)}
+                  </select>
+                  <span className="flex items-center gap-1">
+                    {it.base === 'monto' && <span className="text-slate-400">$</span>}
+                    <input className={`${inputCls} w-24 text-right`} inputMode="decimal" value={it.valor} onChange={e => cambiar(setRet, i, 'valor', e.target.value)} />
+                    {it.base !== 'monto' && <span className="text-slate-400">%</span>}
+                  </span>
+                  <label className="flex items-center gap-1 text-slate-500" title="Marcá si es una retención de IVA: queda como adelanto de IVA a favor">
+                    <input type="checkbox" checked={it.esIVA} onChange={e => cambiar(setRet, i, 'esIVA', e.target.checked)} /> es de IVA
+                  </label>
+                  <button onClick={() => setRet(lista => lista.filter((_, j) => j !== i))} className="text-rose-500 hover:text-rose-700 font-bold px-1" title="Sacar esta retención">✕</button>
+                </div>
+              ))}
+              <button onClick={agregar} className="mt-1 font-semibold" style={{ color: '#0e7490' }}>+ Agregar retención</button>
+
+              <p className="mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Impuestos del banco (sobre lo que acredita)</p>
+              {banco.map((it, i) => (
+                <div key={it.clave} className="flex items-center gap-2 py-1">
+                  <span className="w-52 text-slate-700">{it.etiqueta}</span>
+                  <input className={`${inputCls} w-24 text-right`} inputMode="decimal" value={it.valor} onChange={e => cambiar(setBanco, i, 'valor', e.target.value)} />
+                  <span className="text-slate-400">%</span>
+                </div>
+              ))}
+
+              <div className="mt-3 rounded-lg bg-white border border-amber-200 px-3 py-2">
+                {linea('Retenido', null, vista.totalRetenido, { resta: true })}
+                {linea('Impuestos del banco', null, vista.bancoImpuestos, { resta: true })}
+                {linea('Neto disponible con estos cambios', null, vista.disponible, { fuerte: true })}
+              </div>
+              {error && <p className="text-rose-600 font-semibold mt-2">{error}</p>}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button onClick={() => guardar(r.claveVenta)} disabled={guardando}
+                  className="font-semibold text-white px-3.5 py-1.5 rounded-lg disabled:opacity-50" style={{ backgroundColor: '#0e7490' }}>
+                  {guardando ? 'Guardando…' : 'Guardar solo para esta venta'}
+                </button>
+                {r.claveCliente && (
+                  <button onClick={() => guardar(r.claveCliente)} disabled={guardando}
+                    className="font-semibold px-3.5 py-1.5 rounded-lg border border-cyan-700 text-cyan-800 hover:bg-cyan-50 disabled:opacity-50">
+                    Guardar para todas las ventas de {r.perfil}
+                  </button>
+                )}
+                {r.fuente !== 'estandar' && (
+                  <button onClick={volverAEstandar} disabled={guardando} className="font-semibold text-amber-700 hover:text-amber-900 px-2 py-1.5 disabled:opacity-50">
+                    Volver a los valores estándar
+                  </button>
+                )}
+                <button onClick={() => { setEditando(false); setError('') }} disabled={guardando} className="font-semibold text-slate-500 hover:text-slate-800 px-2 py-1.5">Cancelar</button>
+              </div>
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
   )
 }
 

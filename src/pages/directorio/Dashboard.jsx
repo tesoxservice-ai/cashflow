@@ -12,6 +12,7 @@ import { traerTodo } from '../../lib/traerTodo'
 import { useAuth } from '../../context/AuthContext'
 import GraficoCashflow from './GraficoCashflow'
 import HistorialProyecciones from '../../components/HistorialProyecciones'
+import PanelRetenciones from '../../components/PanelRetenciones'
 import { BarraEscenarios, PanelFecha, AlertasEscenario } from './PanelEscenarios'
 import { useEscenarios, useFimaDatos, construirBase, simular, opcionesMetrica, serieMetrica, COLORES_ESCENARIO } from './escenarios'
 import { combinarConProyeccion } from '../../lib/proyeccionPresupuesto'
@@ -140,6 +141,7 @@ async function cargarDatosExportDirectorio() {
     { data: ventasProy, error: e9 },
     { data: fechasEstGasto, error: e10 },
     { data: fechasEstVenta, error: e11 },
+    { data: ajustesRet },
   ] = await Promise.all([
     traerTodo(() => supabase.from('movimientos')
       .select('id,tipo,categoria,proveedor_cliente,numero_factura,monto_bruto,monto_neto,estado,periodo,fecha_pago,obra_id,rubro_id,concepto,estado_proyeccion')
@@ -159,6 +161,7 @@ async function cargarDatosExportDirectorio() {
     traerTodo(() => supabase.from('ventas_proyectadas').select('id,obra_id,periodo,monto,registrado').order('id')),
     supabase.from('gasto_proyectado_fecha_estimada').select('*'),
     supabase.from('venta_proyectada_fecha_estimada').select('*'),
+    supabase.from('retenciones_config').select('*'), // ajustes de retenciones; si la tabla todavía no existe, se usan los estándar
   ])
 
   const errs = [e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11].filter(Boolean)
@@ -187,7 +190,7 @@ async function cargarDatosExportDirectorio() {
 
   // Movimientos reales + filas virtuales de "gasto proyectado" (presupuesto sin
   // facturar) y "venta proyectada" (venta sin registrar) — ver src/lib/proyeccionPresupuesto.js.
-  const movConProyeccion = combinarConProyeccion(movEnriq, presTodos ?? [], ventasProy ?? [], fechasEstGasto ?? [], fechasEstVenta ?? [], obrasData ?? [], rubrosData ?? [])
+  const movConProyeccion = combinarConProyeccion(movEnriq, presTodos ?? [], ventasProy ?? [], fechasEstGasto ?? [], fechasEstVenta ?? [], obrasData ?? [], rubrosData ?? [], new Date(), ajustesRet ?? [])
     .map(m => m._virtual
       ? { ...m, obraCodigo: m.obras?.codigo ?? '', concepto: m._impuestoVenta ? m.concepto : m.categoria === 'venta_proyectada' ? `Venta proyectada de ${labelPeriodo(m.periodo)}${m._conceptoManual ? ' — ' + m._conceptoManual : ''}` : `${m.rubros?.nombre ?? 'Rubro'} — saldo sin facturar` }
       : m)
@@ -728,10 +731,11 @@ export default function DashboardDirectorio() {
         <div className="flex items-center gap-1 mb-6 border-b border-slate-200">
           <TabButton activo={tab === 'cashflow'} onClick={() => setTab('cashflow')}>Cash Flow</TabButton>
           <TabButton activo={tab === 'presupuesto'} onClick={() => setTab('presupuesto')}>Presupuesto vs. Real</TabButton>
+          <TabButton activo={tab === 'retenciones'} onClick={() => setTab('retenciones')}>Retenciones</TabButton>
           <TabButton activo={tab === 'historial'} onClick={() => setTab('historial')}>Historial de proyecciones</TabButton>
         </div>
 
-        {tab === 'cashflow' ? <TabCashFlow /> : tab === 'presupuesto' ? <TabPresupuesto /> : <HistorialProyecciones />}
+        {tab === 'cashflow' ? <TabCashFlow /> : tab === 'presupuesto' ? <TabPresupuesto /> : tab === 'retenciones' ? <PanelRetenciones /> : <HistorialProyecciones />}
       </main>
     </div>
   )
@@ -759,6 +763,7 @@ function TabCashFlow() {
   const [ventasProyectadas, setVentasProyectadas] = useState([])
   const [fechasEstimadasGasto, setFechasEstimadasGasto] = useState([])
   const [fechasEstimadasVenta, setFechasEstimadasVenta] = useState([])
+  const [ajustesRetenciones, setAjustesRetenciones] = useState([])
   const [movimientos, setMovimientos] = useState([])
   const [saldosBase,  setSaldosBase]  = useState([])
   const [cargando,     setCargando]     = useState(true)
@@ -791,6 +796,8 @@ function TabCashFlow() {
       .then(({ data }) => setFechasEstimadasGasto(data ?? []))
     supabase.from('venta_proyectada_fecha_estimada').select('*')
       .then(({ data }) => setFechasEstimadasVenta(data ?? []))
+    supabase.from('retenciones_config').select('*')
+      .then(({ data }) => setAjustesRetenciones(data ?? []))
   }, [])
 
   useEffect(() => {
@@ -897,8 +904,8 @@ function TabCashFlow() {
   // presupuesto de Operaciones todavía no se facturó). Las virtuales nunca se
   // guardan en la base: se recalculan cada vez a partir de presupuestos vivos.
   const movimientosCombinados = useMemo(
-    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros),
-    [movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros]
+    () => combinarConProyeccion(movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, new Date(), ajustesRetenciones),
+    [movimientos, presupuestos, ventasProyectadas, fechasEstimadasGasto, fechasEstimadasVenta, obras, rubros, ajustesRetenciones]
   )
 
   const { movimientosConSaldo } = useMemo(() => {

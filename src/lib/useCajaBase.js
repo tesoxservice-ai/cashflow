@@ -28,7 +28,7 @@ export default function useCajaBase() {
       const [
         { data: movData, error: e1 }, { data: notasData }, { data: saldosCuenta },
         { data: obras }, { data: rubros }, { data: presupuestos }, { data: ventas },
-        { data: fechasGasto }, { data: fechasVenta },
+        { data: fechasGasto }, { data: fechasVenta }, { data: ajustesRetenciones },
       ] = await Promise.all([
         traerTodo(() => supabase.from('movimientos').select(`
           id, tipo, categoria, proveedor_cliente, numero_factura, monto_bruto, monto_neto, concepto,
@@ -49,6 +49,8 @@ export default function useCajaBase() {
         // select('*') para traer también `partes` (la división manual) sin romper si la columna todavía no existe
         supabase.from('gasto_proyectado_fecha_estimada').select('*'),
         supabase.from('venta_proyectada_fecha_estimada').select('*'),
+        // ajustes editables de las retenciones; si la tabla todavía no existe vuelve vacío y se usan los valores estándar
+        supabase.from('retenciones_config').select('*'),
       ])
       if (!vivo) return
       if (e1) { setError('No se pudo cargar la caja.'); return }
@@ -68,17 +70,22 @@ export default function useCajaBase() {
       setDatos({
         movimientos, saldosBase: Object.values(ultimoPorCuenta),
         obras: obras ?? [], rubros: rubros ?? [], presupuestos: presupuestos ?? [], ventas: ventas ?? [],
-        fechasGasto: fechasGasto ?? [], fechasVenta: fechasVenta ?? [],
+        fechasGasto: fechasGasto ?? [], fechasVenta: fechasVenta ?? [], ajustesRetenciones: ajustesRetenciones ?? [],
       })
     }
     cargar()
     return () => { vivo = false }
   }, [])
 
+  // Movimientos reales + gasto y venta proyectados (las ventas ya en neto, con su desglose de retenciones). Se entrega también
+  // para pantallas que no necesitan la caja entera, como la de Retenciones.
+  const combinados = useMemo(() => (datos
+    ? combinarConProyeccion(datos.movimientos, datos.presupuestos, datos.ventas, datos.fechasGasto, datos.fechasVenta, datos.obras, datos.rubros, new Date(), datos.ajustesRetenciones)
+    : null), [datos])
+
   const base = useMemo(() => {
-    if (!datos || !fima.cargado) return null
+    if (!datos || !fima.cargado || !combinados) return null
     const hoy = hoyISO()
-    const combinados = combinarConProyeccion(datos.movimientos, datos.presupuestos, datos.ventas, datos.fechasGasto, datos.fechasVenta, datos.obras, datos.rubros)
     const sumaBase = datos.saldosBase.reduce((a, s) => a + Number(s.monto ?? 0), 0)
     let saldo = sumaBase
     const conSaldo = combinados.map(m => {
@@ -88,9 +95,9 @@ export default function useCajaBase() {
       return { ...m, saldoAcumulado: saldo }
     })
     return construirBase({ hoy, movimientos: conSaldo, sumaBase, fondos: fima.fondos, saldosFima: fima.saldos, rendimientos: fima.rendimientos })
-  }, [datos, fima])
+  }, [datos, fima, combinados])
 
   const resultado = useMemo(() => (base ? simular(base, null) : null), [base])
 
-  return { base, resultado, cargando: !base && !error, error }
+  return { base, resultado, combinados, cargando: !base && !error, error }
 }
